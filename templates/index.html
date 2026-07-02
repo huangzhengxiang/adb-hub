@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADB Hub</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+    <!-- Header -->
+    <header class="border-b border-gray-800 bg-gray-900">
+        <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold tracking-tight">
+                    <span class="text-emerald-400">ADB</span> Hub
+                </h1>
+                <p class="text-sm text-gray-500 mt-0.5">Device Management Dashboard</p>
+            </div>
+            <div id="health" class="flex items-center gap-2 text-sm">
+                <span class="w-2 h-2 rounded-full bg-gray-600 pulse-dot"></span>
+                <span id="health-text" class="text-gray-500">Checking...</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main -->
+    <main class="max-w-6xl mx-auto px-6 py-8">
+        <!-- Stats -->
+        <div class="grid grid-cols-3 gap-4 mb-8">
+            <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                <p class="text-3xl font-bold text-white" id="device-count">-</p>
+                <p class="text-sm text-gray-500 mt-1">Devices Connected</p>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                <p class="text-3xl font-bold text-emerald-400" id="online-count">-</p>
+                <p class="text-sm text-gray-500 mt-1">Online</p>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                <p class="text-3xl font-bold text-amber-400" id="offline-count">-</p>
+                <p class="text-sm text-gray-500 mt-1">Offline / Unauthorized</p>
+            </div>
+        </div>
+
+        <!-- Device Table -->
+        <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-800">
+                <h2 class="font-semibold">Devices</h2>
+            </div>
+            <div id="device-list" class="divide-y divide-gray-800">
+                <div class="px-6 py-12 text-center text-gray-600">Loading...</div>
+            </div>
+        </div>
+
+        <!-- API Info -->
+        <div class="mt-8 bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h2 class="font-semibold mb-3">API Endpoints</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs">
+                    <span class="text-emerald-400">GET</span>
+                    <span class="text-gray-400 ml-2">/api/v1/devices</span>
+                </div>
+                <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs">
+                    <span class="text-blue-400">POST</span>
+                    <span class="text-gray-400 ml-2">/api/v1/devices/:serial/shell</span>
+                </div>
+                <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs">
+                    <span class="text-blue-400">POST</span>
+                    <span class="text-gray-400 ml-2">/api/v1/devices/:serial/exec</span>
+                </div>
+                <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs">
+                    <span class="text-blue-400">POST</span>
+                    <span class="text-gray-400 ml-2">/api/v1/raw</span>
+                </div>
+                <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs">
+                    <span class="text-emerald-400">GET</span>
+                    <span class="text-gray-400 ml-2">/api/v1/devices/:serial/screenshot</span>
+                </div>
+                <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs">
+                    <span class="text-purple-400">WS</span>
+                    <span class="text-gray-400 ml-2">/ws/v1/shell/:serial</span>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        async function refresh() {
+            try {
+                const resp = await fetch('/api/v1/devices');
+                const data = await resp.json();
+                const devices = data.data?.devices || [];
+                const online = devices.filter(d => d.state === 'device');
+                const offline = devices.filter(d => d.state !== 'device');
+
+                document.getElementById('device-count').textContent = devices.length;
+                document.getElementById('online-count').textContent = online.length;
+                document.getElementById('offline-count').textContent = offline.length;
+
+                const list = document.getElementById('device-list');
+                if (devices.length === 0) {
+                    list.innerHTML = '<div class="px-6 py-12 text-center text-gray-600">No devices connected</div>';
+                } else {
+                    list.innerHTML = devices.map(d => `
+                        <div class="px-6 py-4 flex items-center justify-between hover:bg-gray-800/50 transition-colors">
+                            <div class="flex items-center gap-4">
+                                <span class="w-2.5 h-2.5 rounded-full ${d.state === 'device' ? 'bg-emerald-400 pulse-dot' : 'bg-amber-400'}"></span>
+                                <div>
+                                    <p class="font-medium">${d.model || d.serial}</p>
+                                    <p class="text-xs text-gray-500">${d.serial} &middot; ${d.connection_type}</p>
+                                </div>
+                            </div>
+                            <div class="text-right text-sm">
+                                <span class="${d.state === 'device' ? 'text-emerald-400' : 'text-amber-400'} capitalize">${d.state}</span>
+                                ${d.android_version ? `<p class="text-xs text-gray-500">Android ${d.android_version}</p>` : ''}
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch(e) {
+                document.getElementById('device-list').innerHTML =
+                    '<div class="px-6 py-12 text-center text-red-500">Connection error</div>';
+            }
+
+            // Health check
+            try {
+                const h = await fetch('/api/v1/health');
+                const hd = await h.json();
+                if (hd.data?.adb_available) {
+                    document.getElementById('health-text').textContent = 'ADB OK';
+                    document.getElementById('health-text').className = 'text-emerald-400';
+                    document.querySelector('#health .pulse-dot').className = 'w-2 h-2 rounded-full bg-emerald-400';
+                } else {
+                    document.getElementById('health-text').textContent = 'ADB Error';
+                    document.getElementById('health-text').className = 'text-red-400';
+                    document.querySelector('#health .pulse-dot').className = 'w-2 h-2 rounded-full bg-red-400';
+                }
+            } catch(e) {
+                document.getElementById('health-text').textContent = 'API Down';
+            }
+        }
+
+        refresh();
+        setInterval(refresh, 10000);
+    </script>
+</body>
+</html>

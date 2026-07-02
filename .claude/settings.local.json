@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(pkill -f \"python app.py\")"
+    ]
+  }
+}
