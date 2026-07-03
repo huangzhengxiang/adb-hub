@@ -1,16 +1,23 @@
 """REST API blueprint — the core of ADB Hub."""
 
 import os
-import json
 import tempfile
 import logging
 from functools import wraps
 
-from flask import Blueprint, request, jsonify, send_file, current_app
+from flask import Blueprint, request, jsonify, send_file, g
 from werkzeug.utils import secure_filename
 
 from adb_utils.client import adb, ADBError
 from adb_utils.parser import get_devices_with_details, parse_packages
+from config import ADB_HUB_AUTH_REQUIRED, ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD
+from security import (
+    ENVELOPE_VERSION,
+    SecurityError,
+    decrypt_json_payload,
+    verify_encrypted_token,
+)
+from sessions import SessionError, session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +34,51 @@ def api_response(success: bool, data=None, error: str | None = None, status: int
     return jsonify(body), status
 
 
+def get_request_json(silent: bool = False):
+    """Return decrypted JSON payload when encrypted envelopes are required."""
+    cached = getattr(g, "secure_json_payload", None)
+    if cached is not None:
+        return cached
+    if not request.is_json:
+        if silent:
+            return None
+        raise SecurityError("Content-Type must be application/json")
+    raw = request.get_json(silent=silent)
+    if raw is None:
+        return None if silent else {}
+    if isinstance(raw, dict) and raw.get("v") == ENVELOPE_VERSION:
+        payload = decrypt_json_payload(raw)
+    elif ADB_HUB_AUTH_REQUIRED and ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD and request.method not in {"GET", "HEAD"}:
+        raise SecurityError("encrypted JSON payload required")
+    else:
+        payload = raw
+    g.secure_json_payload = payload
+    return payload
+
+
 def require_json(f):
-    """Decorator that ensures request has JSON body."""
+    """Decorator that ensures request has a valid JSON or encrypted JSON body."""
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if not request.is_json:
-            return api_response(False, error="Content-Type must be application/json", status=400)
+        try:
+            get_request_json()
+        except SecurityError as e:
+            return api_response(False, error=str(e), status=400)
         return f(*args, **kwargs)
     return wrapper
+
+
+@api_bp.before_request
+def authenticate_request():
+    """Require an encrypted token for all API routes except health."""
+    if request.path.endswith("/health") or not ADB_HUB_AUTH_REQUIRED:
+        return None
+    try:
+        verify_encrypted_token(request.headers.get("X-ADB-Hub-Token", ""))
+    except SecurityError as e:
+        status = 503 if "not configured" in str(e) else 401
+        return api_response(False, error=str(e), status=status)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +132,98 @@ def device_detail(serial: str):
 
 
 # ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/sessions", methods=["POST"])
+@require_json
+def create_session():
+    """Create a host workspace on the adb-hub machine for later scp upload."""
+    data = get_request_json()
+    try:
+        session = session_manager.create(
+            serial=data.get("serial", ""),
+            name=data.get("name", ""),
+        )
+        return api_response(True, data=session.to_dict(), status=201)
+    except SessionError as e:
+        return api_response(False, error=str(e), status=400)
+
+
+@api_bp.route("/sessions")
+def list_sessions():
+    """List sessions known to this adb-hub process."""
+    return api_response(True, data={
+        "sessions": [s.to_dict() for s in session_manager.list()],
+        "count": len(session_manager.list()),
+    })
+
+
+@api_bp.route("/sessions/<session_id>")
+def get_session(session_id: str):
+    """Get a session by id."""
+    try:
+        return api_response(True, data=session_manager.get(session_id).to_dict())
+    except SessionError as e:
+        return api_response(False, error=str(e), status=404)
+
+
+@api_bp.route("/sessions/<session_id>/open", methods=["POST"])
+def open_session(session_id: str):
+    """Open a session and create the Android-side workdir."""
+    try:
+        return api_response(True, data=session_manager.open(session_id).to_dict())
+    except SessionError as e:
+        return api_response(False, error=str(e), status=400)
+
+
+@api_bp.route("/sessions/<session_id>/push", methods=["POST"])
+@require_json
+def session_push(session_id: str):
+    """Push one file from the host session workdir to the device session workdir."""
+    data = get_request_json()
+    try:
+        result = session_manager.push(
+            session_id=session_id,
+            src=data.get("src", ""),
+            dest=data.get("dest", data.get("src", "")),
+        )
+        return api_response(result.success, data=result.to_dict())
+    except SessionError as e:
+        return api_response(False, error=str(e), status=400)
+    except ADBError as e:
+        return api_response(False, error=str(e), status=500)
+
+
+@api_bp.route("/sessions/<session_id>/shell", methods=["POST"])
+@require_json
+def session_shell(session_id: str):
+    """Run a shell command from the Android-side session workdir."""
+    data = get_request_json()
+    try:
+        result = session_manager.shell(
+            session_id=session_id,
+            command=data.get("cmd", ""),
+            timeout=int(data.get("timeout", 30)),
+        )
+        return api_response(result.success, data=result.to_dict())
+    except SessionError as e:
+        return api_response(False, error=str(e), status=400)
+    except ADBError as e:
+        return api_response(False, error=str(e), status=500)
+
+
+@api_bp.route("/sessions/<session_id>", methods=["DELETE"])
+def close_session(session_id: str):
+    """Close a session and delete host/device workdirs."""
+    try:
+        session = session_manager.close(session_id)
+        return api_response(True, data=session.to_dict())
+    except SessionError as e:
+        return api_response(False, error=str(e), status=404)
+
+
+# ---------------------------------------------------------------------------
 # Shell
 # ---------------------------------------------------------------------------
 
@@ -98,7 +234,7 @@ def device_shell(serial: str):
 
     Body: {"cmd": "ls -la /sdcard", "timeout": 30}
     """
-    data = request.get_json()
+    data = get_request_json()
     cmd = data.get("cmd", "")
     if not cmd:
         return api_response(False, error="Missing 'cmd' field", status=400)
@@ -122,7 +258,7 @@ def device_exec(serial: str):
 
     Body: {"args": ["push", "/local/file", "/sdcard/file"], "timeout": 60}
     """
-    data = request.get_json()
+    data = get_request_json()
     args = data.get("args", [])
     if not args or not isinstance(args, list):
         return api_response(False, error="Missing or invalid 'args' (must be a list)", status=400)
@@ -142,7 +278,7 @@ def raw_adb():
 
     Body: {"args": ["devices", "-l"], "timeout": 30}
     """
-    data = request.get_json()
+    data = get_request_json()
     args = data.get("args", [])
     if not args or not isinstance(args, list):
         return api_response(False, error="Missing or invalid 'args' (must be a list)", status=400)
@@ -188,6 +324,13 @@ def device_install(serial: str):
     """
     opts = request.form.getlist("opts") or []
 
+    if "file" in request.files and ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD:
+        return api_response(
+            False,
+            error="raw multipart upload is disabled when encrypted payloads are required; use scp session workdir or encrypted JSON server path",
+            status=400,
+        )
+
     if "file" in request.files:
         apk_file = request.files["file"]
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".apk")
@@ -202,7 +345,7 @@ def device_install(serial: str):
             except OSError:
                 pass
     else:
-        data = request.get_json(silent=True) or {}
+        data = get_request_json(silent=True) or {}
         apk_path = data.get("path", "")
         if not apk_path or not os.path.isfile(apk_path):
             return api_response(False, error="Provide 'file' upload or valid server 'path'", status=400)
@@ -220,7 +363,7 @@ def device_uninstall(serial: str):
 
     Body: {"package": "com.example.app"}
     """
-    data = request.get_json()
+    data = get_request_json()
     package = data.get("package", "")
     if not package:
         return api_response(False, error="Missing 'package' field", status=400)
@@ -241,6 +384,13 @@ def device_push(serial: str):
 
     Multipart form: file=<upload>, dest=/sdcard/file.txt
     """
+    if ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD:
+        return api_response(
+            False,
+            error="raw multipart upload is disabled when encrypted payloads are required; use scp session workdir and /sessions/<id>/push",
+            status=400,
+        )
+
     dest = request.form.get("dest", "")
     if not dest:
         return api_response(False, error="Missing 'dest' field", status=400)
@@ -271,7 +421,7 @@ def device_pull(serial: str):
 
     Body: {"src": "/sdcard/file.txt"}
     """
-    data = request.get_json()
+    data = get_request_json()
     src = data.get("src", "")
     if not src:
         return api_response(False, error="Missing 'src' field", status=400)
@@ -317,7 +467,7 @@ def connect_device():
 
     Body: {"address": "192.168.1.100:5555"}
     """
-    data = request.get_json()
+    data = get_request_json()
     address = data.get("address", "")
     if not address:
         return api_response(False, error="Missing 'address' field", status=400)
@@ -335,7 +485,7 @@ def disconnect_device():
 
     Body: {"address": "192.168.1.100:5555"}
     """
-    data = request.get_json()
+    data = get_request_json()
     address = data.get("address", "")
     if not address:
         return api_response(False, error="Missing 'address' field", status=400)
@@ -353,7 +503,7 @@ def device_tcpip(serial: str):
 
     Body: {"port": 5555}
     """
-    data = request.get_json()
+    data = get_request_json()
     port = int(data.get("port", 5555))
     try:
         result = adb.tcpip(serial, port)

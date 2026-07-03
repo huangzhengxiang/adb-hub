@@ -1,1 +1,4 @@
 **/__pycache__/
+.env
+session_workdirs/*
+!session_workdirs/.gitkeep
