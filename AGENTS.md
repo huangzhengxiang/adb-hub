@@ -95,6 +95,15 @@ flask-sock>=0.7
 
 安装: `pip install -r requirements.txt`，或用已有的 `D:\conda\envs\llm` 环境。
 
+## 给 Eval Agent 的测试入口
+
+- engine/eval agent 不应直接调用本机 `adb`；端侧测试统一走 adb-hub client 工具。
+- 稳定流程优先用 `client/agent_session_runner.py` 执行完整 `adb_hub_plan.json`。
+- 调试流程允许用 `client/agent_adb_hub_tool.py` 逐步调用 `start/fetch/open-session/push/shell/pull/download/finish`。
+- low-level tool 一个 `--ledger` 只允许一个 session；agent 开始时 `start`，结束时 `finish`，失败或中断后调用 `cleanup` 兜底。
+- 详细说明见 `client/AGENT_USAGE.md`，模板见 `client/agent_plan_template.json`。
+- 正式评测不要使用 `--keep-session`；失败也应让 runner/tool 尝试关闭 session 并把错误写入 report。
+
 ## 运行与测试
 
 ```bash

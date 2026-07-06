@@ -142,6 +142,21 @@ adb-server 运行 `adb-hub` 并连接手机；remote client/runner 只通过 HTT
 
 所有命令失败都会返回结构化 `data`，其中包含 `stdout`、`stderr`、`exit_code` 或 `traceback`；调用方不应依赖沉默失败。
 
+### Agent Runner
+
+`client/agent_session_runner.py` 是给 eval/engine agent 使用的 manifest 驱动 runner。agent 可以生成一个 `adb_hub_plan.json`，声明要 `fetch`、`push`、`shell`、`pull`、`download` 的文件和命令；runner 会自动创建 session、执行步骤、失败时关闭 session，并输出完整 JSON 报告。
+
+如果 agent 需要开放式逐步调试，可以使用 `client/agent_adb_hub_tool.py`。该工具一个 ledger 只允许一个 session：`start` 创建，`fetch/open-session/push/shell/pull/download` 隐式使用该 session，`finish` 关闭；失败或中断后用 `cleanup` 兜底。详细 schema、ledger 规则和示例见 `client/AGENT_USAGE.md`，模板见 `client/agent_plan_template.json`。
+
+```bash
+python client/agent_session_runner.py \
+  --plan path/to/adb_hub_plan.json \
+  --output path/to/adb_hub_report.json
+
+python client/agent_adb_hub_tool.py --ledger path/to/session_ledger.json start --name <run-name>
+python client/agent_adb_hub_tool.py --ledger path/to/session_ledger.json finish
+```
+
 ### Python Client
 
 `client/adb_hub_client.py` 提供无第三方依赖的加密客户端。它从 `--secret`、`ADB_HUB_AUTH_SECRET`，或 `adb-hub/.env` 读取密钥；`--base-url` 未指定时，优先使用 `ADB_HUB_URL`，其次用 `ADB_HUB_PUBLIC_HOST` + `ADB_HUB_PORT` 生成 HTTP API 地址。

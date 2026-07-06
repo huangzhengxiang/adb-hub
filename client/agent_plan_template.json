@@ -1,0 +1,46 @@
+{
+  "name": "example-native-runtime-test",
+  "serial": "",
+  "fetch_timeout": 600,
+  "shell_timeout": 600,
+  "fetch": [
+    {
+      "src": "path/to/local/remote-client-binary-or-model-file",
+      "dest": "runner-or-model-file"
+    }
+  ],
+  "open": true,
+  "push": [
+    {
+      "src": "runner-or-model-file",
+      "dest": "runner-or-model-file"
+    }
+  ],
+  "shell": [
+    {
+      "cmd": "chmod +x runner-or-model-file && ./runner-or-model-file > stdout.txt 2> stderr.txt",
+      "timeout": 600
+    }
+  ],
+  "pull": [
+    {
+      "src": "stdout.txt",
+      "dest": "outputs/stdout.txt"
+    },
+    {
+      "src": "stderr.txt",
+      "dest": "outputs/stderr.txt"
+    }
+  ],
+  "download": [
+    {
+      "src": "outputs/stdout.txt",
+      "dest": "./stdout.txt"
+    },
+    {
+      "src": "outputs/stderr.txt",
+      "dest": "./stderr.txt"
+    }
+  ],
+  "close": true
+}
