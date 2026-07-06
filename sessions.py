@@ -13,7 +13,6 @@ from pathlib import Path
 from adb_utils.client import ADBError, adb
 from config import (
     ADB_HUB_DEVICE_SESSION_ROOT,
-    ADB_HUB_PUBLIC_URL,
     ADB_HUB_SCP_HOST,
     ADB_HUB_SCP_USER,
     ADB_HUB_SESSION_ROOT,
@@ -38,8 +37,6 @@ class ADBSession:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        if ADB_HUB_PUBLIC_URL:
-            data["hub_url"] = ADB_HUB_PUBLIC_URL
         if ADB_HUB_SCP_HOST:
             prefix = f"{ADB_HUB_SCP_USER}@" if ADB_HUB_SCP_USER else ""
             data["scp_target"] = f"{prefix}{ADB_HUB_SCP_HOST}:{self.host_workdir}/"

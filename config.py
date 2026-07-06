@@ -34,7 +34,6 @@ HOST = os.environ.get("ADB_HUB_HOST", "0.0.0.0")
 PORT = int(os.environ.get("ADB_HUB_PORT", "3588"))
 DEBUG = os.environ.get("ADB_HUB_DEBUG", "false").lower() == "true"
 ADB_HUB_PUBLIC_HOST = os.environ.get("ADB_HUB_PUBLIC_HOST", "")
-ADB_HUB_PUBLIC_URL = f"http://{ADB_HUB_PUBLIC_HOST}:{PORT}" if ADB_HUB_PUBLIC_HOST else ""
 
 # ADB binary (assumed in PATH)
 ADB_PATH = os.environ.get("ADB_PATH", "adb")

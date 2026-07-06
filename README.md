@@ -89,7 +89,7 @@ adb-server 运行 `adb-hub` 并连接手机；remote client/runner 通过 HTTP A
 ### Session 生命周期
 
 1. `create-session`
-   创建 `adb-hub/session_workdirs/<session_id>/`，写入 `session.json`，返回 `host_workdir`、`device_workdir`、可选 `hub_url` 和可选 `scp_target`。`hub_url` 来自 `ADB_HUB_PUBLIC_HOST`；`scp_target` 只在显式配置 `ADB_HUB_SCP_HOST` 时返回，不会 fallback 到 HTTP 地址。服务重启时会扫描仍存在的 `session.json` 恢复未关闭 session。
+   创建 `adb-hub/session_workdirs/<session_id>/`，写入 `session.json`，返回 `host_workdir`、`device_workdir` 和可选 `scp_target`。`scp_target` 只在显式配置 `ADB_HUB_SCP_HOST` 时返回，不会 fallback 到 HTTP 地址。服务重启时会扫描仍存在的 `session.json` 恢复未关闭 session。
 
 2. scp 上传
    remote client 把模型、二进制和脚本上传到返回的 `host_workdir`。这些文件不走 HTTP multipart；目录内容被 `.gitignore` 忽略。
@@ -110,7 +110,7 @@ adb-server 运行 `adb-hub` 并连接手机；remote client/runner 通过 HTTP A
 
 | Method | Path | 说明 |
 |--------|------|------|
-| `POST` | `/api/v1/sessions` | 创建 session，返回 A 机器上的 `host_workdir`、可选 `hub_url` 和可选 `scp_target` |
+| `POST` | `/api/v1/sessions` | 创建 session，返回 A 机器上的 `host_workdir` 和可选 `scp_target` |
 | `GET` | `/api/v1/sessions` | 列出当前 active/recovered sessions |
 | `GET` | `/api/v1/sessions/<session_id>` | 查看单个 active/recovered session |
 | `POST` | `/api/v1/sessions/<session_id>/open` | 打开 session，并在手机端创建工作目录 |
