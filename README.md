@@ -30,8 +30,10 @@ python app.py
 | `ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD` | `true` | 是否要求 JSON 请求体使用加密 envelope |
 | `ADB_HUB_SESSION_ROOT` | `session_workdirs` | A 机器上的 session 工作目录根路径，默认位于项目内被忽略目录 |
 | `ADB_HUB_DEVICE_SESSION_ROOT` | `/data/local/tmp/adb-hub` | 手机端 session 工作目录根路径 |
-| `ADB_HUB_SCP_HOST` | 空 | remote client/runner scp/ssh 上传文件到 adb-server 使用的地址；需要 `scp_target` 时必须显式设置 |
-| `ADB_HUB_SCP_USER` | 空 | remote client/runner scp 到 adb-server 使用的 SSH user |
+| `ADB_HUB_SCP_HOST` | 空 | adb-server scp/ssh 下载 remote client 文件时访问 remote client 使用的地址；使用 `fetch` 时必须显式设置 |
+| `ADB_HUB_SCP_PORT` | 空 | adb-server scp 到 remote client 使用的 SSH 端口；为空时使用 scp 默认端口 22 |
+| `ADB_HUB_SCP_USER` | 空 | adb-server scp 到 remote client 使用的 SSH user |
+| `ADB_HUB_SCP_PASSWORD` | 空 | adb-server scp 到 remote client 使用的 SSH password；为空时依赖 key/agent 等非密码认证 |
 
 ```bash
 ADB_HUB_PORT=8080 python app.py   # 换端口
@@ -46,8 +48,10 @@ ADB_HUB_AUTH_SECRET=<replace-with-random-local-secret>
 ADB_HUB_AUTH_REQUIRED=true
 ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD=true
 ADB_HUB_PUBLIC_HOST=<adb-server-http-host-or-ip>
-ADB_HUB_SCP_HOST=<adb-server-ssh-host-or-ip>
+ADB_HUB_SCP_HOST=<remote-client-ssh-host-or-ip>
+ADB_HUB_SCP_PORT=
 ADB_HUB_SCP_USER=<ssh-user>
+ADB_HUB_SCP_PASSWORD=<ssh-password>
 ```
 
 认证 token 的明文是 `security.py` 里硬编码的长随机串。客户端和服务端都用 `.env` 里的 `ADB_HUB_AUTH_SECRET` 对该明文 token 做加密，实际 HTTP 交互只传加密后的 token：
@@ -84,39 +88,59 @@ body = encrypt_json_payload({"serial": "<device-serial>", "name": "mnn-run"})
 
 ## Session + SCP 工作流
 
-adb-server 运行 `adb-hub` 并连接手机；remote client/runner 通过 HTTP API 控制 adb-hub，通过 scp/ssh 把模型和二进制上传到 adb-server 的 session 工作目录。`ADB_HUB_PUBLIC_HOST` 是 remote client 访问 adb-server HTTP API 的地址，`ADB_HUB_SCP_HOST` 是 remote client scp 到 adb-server 的 SSH 地址；二者多数情况下相同，但可以分开配置。`ADB_HUB_SESSION_ROOT=session_workdirs` 会解析为 `adb-hub/session_workdirs`，不是调用方当前目录下的 `session_workdirs`。
+adb-server 运行 `adb-hub` 并连接手机；remote client/runner 只通过 HTTP API 发控制指令。模型、二进制和脚本不由 remote client 主动上传到 adb-server，而是 remote client 发送 `fetch` 请求，adb-server 再从 remote client 的 SSH/SCP 地址下载到自己的 session 工作目录。
+
+地址方向必须区分：
+
+- `ADB_HUB_PUBLIC_HOST`：remote client 访问 adb-server HTTP API 的地址。
+- `ADB_HUB_SCP_HOST`：adb-server 访问 remote client SSH/SCP 的地址。
+
+`ADB_HUB_SESSION_ROOT=session_workdirs` 会解析为 `adb-hub/session_workdirs`，不是调用方当前目录下的 `session_workdirs`。
 
 ### Session 生命周期
 
 1. `create-session`
-   创建 `adb-hub/session_workdirs/<session_id>/`，写入 `session.json`，返回 `host_workdir`、`device_workdir` 和可选 `scp_target`。`scp_target` 只在显式配置 `ADB_HUB_SCP_HOST` 时返回，不会 fallback 到 HTTP 地址。服务重启时会扫描仍存在的 `session.json` 恢复未关闭 session。
+   创建 `adb-hub/session_workdirs/<session_id>/`，写入 `session.json`，返回 `host_workdir`、`device_workdir` 和 `scp_source_configured`。服务重启时会扫描仍存在的 `session.json` 恢复未关闭 session。
 
-2. scp 上传
-   remote client 把模型、二进制和脚本上传到返回的 `host_workdir`。这些文件不走 HTTP multipart；目录内容被 `.gitignore` 忽略。
+2. `fetch`
+   remote client 通过 HTTP API 告诉 adb-server 要下载的 remote-client 文件路径；adb-server 执行 `scp [-P ADB_HUB_SCP_PORT] <ADB_HUB_SCP_USER>@<ADB_HUB_SCP_HOST>:<src> <host_workdir>/<dest>`；如配置 `ADB_HUB_SCP_PASSWORD`，会通过 OpenSSH `SSH_ASKPASS` 提供密码，把文件下载到 adb-server 本地 session workdir。
 
 3. `open-session`
    在手机上创建 `/data/local/tmp/adb-hub/<session_id>/`，并锁定该 device serial。同一台设备同时只能被一个 open session 使用。
 
 4. `push`
-   只允许从 host session workdir 内的相对路径推送到手机端 session workdir 内的相对路径，防止路径逃逸。
+   将 adb-server host session workdir 内的文件推送到手机端 session workdir。路径都使用相对路径，防止路径逃逸。
 
 5. `shell`
-   在手机端 session workdir 下执行命令。
+   在手机端 session workdir 下执行命令。remote client 应自行在命令中控制 stdout/stderr 重定向，例如 `./runner > out.txt 2> err.txt`；`logcat` 也建议用 `logcat -d > logcat.txt 2>&1` 写入文件。
 
-6. `close-session`
-   删除 A 机器上的 `session_workdirs/<session_id>/`，删除手机端 `/data/local/tmp/adb-hub/<session_id>/`，释放设备锁，并从当前进程的 active session 列表移除。
+6. `pull`
+   将手机端 session workdir 内的输出文件拉回 adb-server host session workdir。
+
+7. `download`
+   remote client 通过 HTTP API 下载 adb-server host session workdir 中的输出文件。
+
+8. `close-session`
+   删除 adb-server 上的 `session_workdirs/<session_id>/`，删除手机端 `/data/local/tmp/adb-hub/<session_id>/`，释放设备锁，并从当前进程的 active session 列表移除。清理失败会返回 `cleanup_errors`，不会静默吞掉。
+
+这些操作可以多轮、任意顺序组合；其中 `push`、`shell`、`pull` 要求 session 已 open，`fetch` 可以在 open 前或 open 后执行。
 
 ### Session API
 
 | Method | Path | 说明 |
 |--------|------|------|
-| `POST` | `/api/v1/sessions` | 创建 session，返回 A 机器上的 `host_workdir` 和可选 `scp_target` |
+| `POST` | `/api/v1/sessions` | 创建 session，返回 adb-server 上的 `host_workdir`、手机端 `device_workdir` 和 `scp_source_configured` |
 | `GET` | `/api/v1/sessions` | 列出当前 active/recovered sessions |
 | `GET` | `/api/v1/sessions/<session_id>` | 查看单个 active/recovered session |
+| `POST` | `/api/v1/sessions/<session_id>/fetch` | adb-server 从 configured remote client scp 下载文件到 host session 目录 |
 | `POST` | `/api/v1/sessions/<session_id>/open` | 打开 session，并在手机端创建工作目录 |
-| `POST` | `/api/v1/sessions/<session_id>/push` | 将 A 机器 session 目录内文件推送到手机端 session 目录 |
+| `POST` | `/api/v1/sessions/<session_id>/push` | 将 adb-server host session 目录内文件推送到手机端 session 目录 |
 | `POST` | `/api/v1/sessions/<session_id>/shell` | 在手机端 session 目录下执行 shell 命令 |
-| `DELETE` | `/api/v1/sessions/<session_id>` | 关闭 session，删除 A 机器和手机端工作目录 |
+| `POST` | `/api/v1/sessions/<session_id>/pull` | 将手机端 session 目录内文件拉回 adb-server host session 目录 |
+| `POST` | `/api/v1/sessions/<session_id>/download` | remote client 下载 adb-server host session 目录内文件 |
+| `DELETE` | `/api/v1/sessions/<session_id>` | 关闭 session，删除 adb-server 和手机端工作目录 |
+
+所有命令失败都会返回结构化 `data`，其中包含 `stdout`、`stderr`、`exit_code` 或 `traceback`；调用方不应依赖沉默失败。
 
 ### Python Client
 
@@ -126,16 +150,18 @@ adb-server 运行 `adb-hub` 并连接手机；remote client/runner 通过 HTTP A
 # 查看设备
 python client/adb_hub_client.py --base-url http://A:3588 devices
 
-# 创建 session，返回 host_workdir/scp_target
+# 创建 session，返回 host_workdir/device_workdir
 python client/adb_hub_client.py --base-url http://A:3588 create-session   --serial <device-serial> --name mnn-run
 
-# remote client 通过 scp 把文件放入 adb-server 的 adb-hub/session_workdirs/<session_id>/
-scp inference_runner model.bin <ssh-user>@<adb-server-ssh-host-or-ip>:/path/to/adb-hub/session_workdirs/<session_id>/
+# adb-server 从 remote client 下载文件到 host session workdir
+python client/adb_hub_client.py --base-url http://A:3588 fetch <session_id>   /path/on/remote-client/inference_runner inference_runner
 
-# 打开 session、推送到手机、执行、关闭
+# 打开 session、推送到手机、执行、拉回输出、下载到 remote client、关闭
 python client/adb_hub_client.py --base-url http://A:3588 open-session <session_id>
 python client/adb_hub_client.py --base-url http://A:3588 push <session_id> inference_runner inference_runner
-python client/adb_hub_client.py --base-url http://A:3588 shell <session_id> -- chmod +x inference_runner '&&' ./inference_runner
+python client/adb_hub_client.py --base-url http://A:3588 shell <session_id> -- chmod +x inference_runner '&&' ./inference_runner '>' out.txt '2>' err.txt
+python client/adb_hub_client.py --base-url http://A:3588 pull <session_id> out.txt outputs/out.txt
+python client/adb_hub_client.py --base-url http://A:3588 download <session_id> outputs/out.txt ./out.txt
 python client/adb_hub_client.py --base-url http://A:3588 close-session <session_id>
 ```
 
@@ -147,7 +173,7 @@ python client/adb_hub_client.py --base-url http://A:3588 close-session <session_
 curl -X POST http://A:3588/api/v1/sessions   -H "Content-Type: application/json"   -H "X-ADB-Hub-Token: $TOKEN"   -d "$ENCRYPTED_CREATE_SESSION_BODY"
 ```
 
-启用 `ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD=true` 时，raw multipart 文件上传会被拒绝；模型、二进制和大文件应通过 scp 放入 session workdir，再使用 `/sessions/<id>/push` 推送到手机。
+启用 `ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD=true` 时，raw multipart 文件上传会被拒绝；模型、二进制和大文件应通过 `/sessions/<id>/fetch` 让 adb-server 从 remote client scp 下载到 session workdir，再使用 `/sessions/<id>/push` 推送到手机。
 
 ## API 参考
 

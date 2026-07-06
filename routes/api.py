@@ -3,6 +3,7 @@
 import os
 import tempfile
 import logging
+import traceback
 from functools import wraps
 
 from flask import Blueprint, request, jsonify, send_file, g
@@ -32,6 +33,23 @@ def api_response(success: bool, data=None, error: str | None = None, status: int
     """Build uniform JSON response."""
     body = {"success": success, "data": data, "error": error}
     return jsonify(body), status
+
+
+def command_error(data, default: str = "command failed") -> str | None:
+    if not isinstance(data, dict):
+        return None if data else default
+    if data.get("success", True):
+        return None
+    return data.get("stderr") or data.get("stdout") or data.get("error") or default
+
+
+def unexpected_error(exc: Exception):
+    return api_response(
+        False,
+        data={"traceback": traceback.format_exc()},
+        error=str(exc),
+        status=500,
+    )
 
 
 def get_request_json(silent: bool = False):
@@ -188,11 +206,68 @@ def session_push(session_id: str):
             src=data.get("src", ""),
             dest=data.get("dest", data.get("src", "")),
         )
-        return api_response(result.success, data=result.to_dict())
+        result_data = result.to_dict()
+        return api_response(result.success, data=result_data, error=command_error(result_data, "adb push failed"))
     except SessionError as e:
         return api_response(False, error=str(e), status=400)
     except ADBError as e:
-        return api_response(False, error=str(e), status=500)
+        return api_response(False, data={"traceback": traceback.format_exc()}, error=str(e), status=500)
+    except Exception as e:
+        return unexpected_error(e)
+
+
+@api_bp.route("/sessions/<session_id>/fetch", methods=["POST"])
+@require_json
+def session_fetch(session_id: str):
+    """Download one file from the configured remote client into the host session workdir."""
+    data = get_request_json()
+    try:
+        result = session_manager.fetch(
+            session_id=session_id,
+            src=data.get("src", ""),
+            dest=data.get("dest", ""),
+            recursive=bool(data.get("recursive", False)),
+            timeout=int(data.get("timeout", 600)),
+        )
+        return api_response(result.get("success", False), data=result, error=command_error(result, "scp fetch failed"))
+    except SessionError as e:
+        return api_response(False, error=str(e), status=400)
+    except Exception as e:
+        return unexpected_error(e)
+
+
+@api_bp.route("/sessions/<session_id>/pull", methods=["POST"])
+@require_json
+def session_pull(session_id: str):
+    """Pull one file from the device session workdir to the host session workdir."""
+    data = get_request_json()
+    try:
+        result = session_manager.pull(
+            session_id=session_id,
+            src=data.get("src", ""),
+            dest=data.get("dest", ""),
+        )
+        return api_response(result.get("success", False), data=result, error=command_error(result, "adb pull failed"))
+    except SessionError as e:
+        return api_response(False, error=str(e), status=400)
+    except ADBError as e:
+        return api_response(False, data={"traceback": traceback.format_exc()}, error=str(e), status=500)
+    except Exception as e:
+        return unexpected_error(e)
+
+
+@api_bp.route("/sessions/<session_id>/download", methods=["POST"])
+@require_json
+def session_download(session_id: str):
+    """Download one file from the host session workdir to the remote client."""
+    data = get_request_json()
+    try:
+        path = session_manager.download_path(session_id, data.get("path", ""))
+        return send_file(path, as_attachment=True, download_name=path.name)
+    except SessionError as e:
+        return api_response(False, error=str(e), status=400)
+    except Exception as e:
+        return unexpected_error(e)
 
 
 @api_bp.route("/sessions/<session_id>/shell", methods=["POST"])
@@ -206,11 +281,14 @@ def session_shell(session_id: str):
             command=data.get("cmd", ""),
             timeout=int(data.get("timeout", 30)),
         )
-        return api_response(result.success, data=result.to_dict())
+        result_data = result.to_dict()
+        return api_response(result.success, data=result_data, error=command_error(result_data, "adb shell failed"))
     except SessionError as e:
         return api_response(False, error=str(e), status=400)
     except ADBError as e:
-        return api_response(False, error=str(e), status=500)
+        return api_response(False, data={"traceback": traceback.format_exc()}, error=str(e), status=500)
+    except Exception as e:
+        return unexpected_error(e)
 
 
 @api_bp.route("/sessions/<session_id>", methods=["DELETE"])
@@ -218,9 +296,13 @@ def close_session(session_id: str):
     """Close a session and delete host/device workdirs."""
     try:
         session = session_manager.close(session_id)
-        return api_response(True, data=session.to_dict())
+        data = session.to_dict()
+        ok = not data.get("cleanup_errors")
+        return api_response(ok, data=data, error=None if ok else "session cleanup failed")
     except SessionError as e:
         return api_response(False, error=str(e), status=404)
+    except Exception as e:
+        return unexpected_error(e)
 
 
 # ---------------------------------------------------------------------------

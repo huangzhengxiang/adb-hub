@@ -142,7 +142,7 @@ class ADBHubClient:
                 parsed = json.loads(raw)
             except json.JSONDecodeError as parse_exc:
                 raise ADBHubClientError(f"HTTP {exc.code}: {raw}") from parse_exc
-            raise ADBHubClientError(f"HTTP {exc.code}: {parsed.get('error') or parsed}") from exc
+            raise ADBHubClientError(f"HTTP {exc.code}: {parsed.get('error') or parsed}; data={parsed.get('data')}") from exc
         except urllib.error.URLError as exc:
             raise ADBHubClientError(str(exc)) from exc
         try:
@@ -150,8 +150,33 @@ class ADBHubClient:
         except json.JSONDecodeError as exc:
             raise ADBHubClientError(f"non-JSON response: {raw[:200]}") from exc
         if not parsed.get("success", False):
-            raise ADBHubClientError(str(parsed.get("error") or parsed))
+            raise ADBHubClientError(f"{parsed.get('error') or 'request failed'}; data={parsed.get('data')}")
         return parsed
+
+    def download_file(self, session_id: str, path: str, local_path: str | Path, encrypted: bool = True) -> Path:
+        """Download a host-session file to the local remote-client filesystem."""
+        url = self.base_url + f"/api/v1/sessions/{session_id}/download"
+        payload = {"path": path}
+        body_obj = encrypt_json_payload(payload, self.secret) if encrypted else payload
+        body = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers=self._headers(encrypted=encrypted), method="POST")
+        dest = Path(local_path)
+        if dest.is_dir():
+            dest = dest / Path(path).name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                dest.write_bytes(resp.read())
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as parse_exc:
+                raise ADBHubClientError(f"HTTP {exc.code}: {raw}") from parse_exc
+            raise ADBHubClientError(f"HTTP {exc.code}: {parsed.get('error') or parsed}; data={parsed.get('data')}") from exc
+        except urllib.error.URLError as exc:
+            raise ADBHubClientError(str(exc)) from exc
+        return dest
 
     def health(self) -> dict[str, Any]:
         return self.request("GET", "/api/v1/health")
@@ -177,6 +202,16 @@ class ADBHubClient:
             f"/api/v1/sessions/{session_id}/push",
             {"src": src, "dest": dest or src},
         )
+
+    def fetch(self, session_id: str, src: str, dest: str = "", recursive: bool = False, timeout: int = 600) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/fetch",
+            {"src": src, "dest": dest, "recursive": recursive, "timeout": timeout},
+        )
+
+    def pull(self, session_id: str, src: str, dest: str = "") -> dict[str, Any]:
+        return self.request("POST", f"/api/v1/sessions/{session_id}/pull", {"src": src, "dest": dest})
 
     def shell(self, session_id: str, cmd: str, timeout: int = 30) -> dict[str, Any]:
         return self.request("POST", f"/api/v1/sessions/{session_id}/shell", {"cmd": cmd, "timeout": timeout})
@@ -215,6 +250,23 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("src", help="Path relative to the host session workdir")
     push.add_argument("dest", nargs="?", help="Path relative to the device session workdir")
 
+    fetch = sub.add_parser("fetch")
+    fetch.add_argument("session_id")
+    fetch.add_argument("src", help="Path on the configured remote client, used as scp source")
+    fetch.add_argument("dest", nargs="?", default="", help="Path relative to the host session workdir")
+    fetch.add_argument("--recursive", action="store_true")
+    fetch.add_argument("--fetch-timeout", type=int, default=600)
+
+    pull = sub.add_parser("pull")
+    pull.add_argument("session_id")
+    pull.add_argument("src", help="Path relative to the device session workdir")
+    pull.add_argument("dest", nargs="?", default="", help="Path relative to the host session workdir")
+
+    download = sub.add_parser("download")
+    download.add_argument("session_id")
+    download.add_argument("path", help="Path relative to the host session workdir")
+    download.add_argument("local_path", help="Local output file or directory")
+
     shell = sub.add_parser("shell")
     shell.add_argument("session_id")
     shell.add_argument("cmd", nargs=argparse.REMAINDER)
@@ -243,6 +295,13 @@ def main(argv: list[str] | None = None) -> int:
             result = client.open_session(args.session_id)
         elif args.command == "push":
             result = client.push(args.session_id, args.src, args.dest)
+        elif args.command == "fetch":
+            result = client.fetch(args.session_id, args.src, args.dest, recursive=args.recursive, timeout=args.fetch_timeout)
+        elif args.command == "pull":
+            result = client.pull(args.session_id, args.src, args.dest)
+        elif args.command == "download":
+            path = client.download_file(args.session_id, args.path, args.local_path)
+            result = {"success": True, "data": {"local_path": str(path)}, "error": None}
         elif args.command == "shell":
             cmd_parts = args.cmd[1:] if args.cmd and args.cmd[0] == "--" else args.cmd
             if not cmd_parts:

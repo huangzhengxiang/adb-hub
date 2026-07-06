@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import shlex
 import secrets
-from dataclasses import asdict, dataclass
+import subprocess
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +16,8 @@ from adb_utils.client import ADBError, adb
 from config import (
     ADB_HUB_DEVICE_SESSION_ROOT,
     ADB_HUB_SCP_HOST,
+    ADB_HUB_SCP_PASSWORD,
+    ADB_HUB_SCP_PORT,
     ADB_HUB_SCP_USER,
     ADB_HUB_SESSION_ROOT,
 )
@@ -34,12 +38,11 @@ class ADBSession:
     created_at: str
     opened_at: str | None = None
     closed_at: str | None = None
+    cleanup_errors: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        if ADB_HUB_SCP_HOST:
-            prefix = f"{ADB_HUB_SCP_USER}@" if ADB_HUB_SCP_USER else ""
-            data["scp_target"] = f"{prefix}{ADB_HUB_SCP_HOST}:{self.host_workdir}/"
+        data["scp_source_configured"] = bool(ADB_HUB_SCP_HOST)
         return data
 
 
@@ -79,6 +82,7 @@ class SessionManager:
                     created_at=data["created_at"],
                     opened_at=data.get("opened_at"),
                     closed_at=data.get("closed_at"),
+                    cleanup_errors=data.get("cleanup_errors", []),
                 )
                 if not Path(session.host_workdir).resolve().is_relative_to(self.root):
                     continue
@@ -151,19 +155,32 @@ class SessionManager:
 
     def close(self, session_id: str, remove_device: bool = True) -> ADBSession:
         session = self.get(session_id)
+        cleanup_errors: list[dict] = []
         session.state = "closed"
         session.closed_at = self._now()
         if remove_device:
             try:
-                adb.shell(session.serial, f"rm -rf {shlex.quote(session.device_workdir)}", timeout=30)
-            except ADBError:
-                pass
+                result = adb.shell(session.serial, f"rm -rf {shlex.quote(session.device_workdir)}", timeout=30)
+                if not result.success:
+                    cleanup_errors.append({
+                        "stage": "device_cleanup",
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "exit_code": result.exit_code,
+                    })
+            except ADBError as exc:
+                cleanup_errors.append({"stage": "device_cleanup", "error": str(exc)})
         host_path = self._session_path(session_id)
-        if host_path.exists():
-            shutil.rmtree(host_path)
+        try:
+            if host_path.exists():
+                shutil.rmtree(host_path)
+        except OSError as exc:
+            cleanup_errors.append({"stage": "host_cleanup", "error": str(exc), "path": str(host_path)})
         if self.serial_locks.get(session.serial) == session_id:
             del self.serial_locks[session.serial]
-        self.sessions.pop(session_id, None)
+        session.cleanup_errors = cleanup_errors
+        if not cleanup_errors:
+            self.sessions.pop(session_id, None)
         return session
 
     def push(self, session_id: str, src: str, dest: str):
@@ -177,6 +194,127 @@ class SessionManager:
         parent = str(Path(device_dest).parent)
         adb.shell(session.serial, f"mkdir -p {shlex.quote(parent)}", timeout=30)
         return adb.push(session.serial, str(src_path), device_dest)
+
+    def pull(self, session_id: str, src: str, dest: str = "") -> dict:
+        """Pull a file from the device session workdir into the host session workdir."""
+        session = self.get(session_id)
+        if session.state != "open":
+            raise SessionError("session must be open before pull")
+        device_src = self._device_path(session, src)
+        if dest:
+            host_dest = self._safe_host_path(session, dest)
+        else:
+            name = src.rstrip("/\\").replace("\\", "/").split("/")[-1]
+            if not name or name in {".", ".."}:
+                raise SessionError("dest is required when src has no basename")
+            host_dest = self._safe_host_path(session, name)
+        host_dest.parent.mkdir(parents=True, exist_ok=True)
+        result = adb.pull(session.serial, device_src, str(host_dest))
+        return {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+            "success": result.success,
+            "device_src": device_src,
+            "host_dest": str(host_dest),
+        }
+
+    def download_path(self, session_id: str, rel_path: str) -> Path:
+        """Resolve a host session file for HTTP download."""
+        session = self.get(session_id)
+        path = self._safe_host_path(session, rel_path)
+        if not path.is_file():
+            raise SessionError("file does not exist in session workdir")
+        return path
+
+    def _write_askpass(self, session: ADBSession) -> Path | None:
+        if not ADB_HUB_SCP_PASSWORD:
+            return None
+        base = Path(session.host_workdir)
+        if os.name == "nt":
+            path = base / ".adb_hub_askpass.cmd"
+            path.write_text(
+                '@echo off\r\npowershell -NoProfile -Command "[Console]::Out.WriteLine($env:ADB_HUB_SCP_PASSWORD)"\r\n',
+                encoding="utf-8",
+            )
+        else:
+            path = base / ".adb_hub_askpass.sh"
+            path.write_text("#!/bin/sh\nprintf '%s\\n' \"$ADB_HUB_SCP_PASSWORD\"\n", encoding="utf-8")
+            path.chmod(0o700)
+        return path
+
+    def _scp_env(self, askpass: Path | None) -> dict:
+        env = os.environ.copy()
+        if askpass is not None:
+            env["SSH_ASKPASS"] = str(askpass)
+            env["SSH_ASKPASS_REQUIRE"] = "force"
+            env["DISPLAY"] = env.get("DISPLAY", "adb-hub:0")
+            env["ADB_HUB_SCP_PASSWORD"] = ADB_HUB_SCP_PASSWORD
+        return env
+
+    def fetch(self, session_id: str, src: str, dest: str = "", recursive: bool = False, timeout: int = 600) -> dict:
+        """Download a file from the remote client into the host session workdir."""
+        session = self.get(session_id)
+        if not ADB_HUB_SCP_HOST:
+            raise SessionError("ADB_HUB_SCP_HOST is required for session fetch")
+        if not src or "\0" in src:
+            raise SessionError("src is required")
+        if dest:
+            dest_path = self._safe_host_path(session, dest)
+        else:
+            name = src.rstrip("/\\").replace("\\", "/").split("/")[-1]
+            if not name or name in {".", ".."}:
+                raise SessionError("dest is required when src has no basename")
+            dest_path = self._safe_host_path(session, name)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        remote_prefix = f"{ADB_HUB_SCP_USER}@" if ADB_HUB_SCP_USER else ""
+        remote = f"{remote_prefix}{ADB_HUB_SCP_HOST}:{src}"
+        cmd = ["scp", "-o", "BatchMode=no", "-o", "NumberOfPasswordPrompts=1", "-o", "StrictHostKeyChecking=accept-new"]
+        if ADB_HUB_SCP_PORT:
+            try:
+                port = int(ADB_HUB_SCP_PORT)
+            except ValueError as exc:
+                raise SessionError("ADB_HUB_SCP_PORT must be an integer") from exc
+            if port <= 0 or port > 65535:
+                raise SessionError("ADB_HUB_SCP_PORT must be between 1 and 65535")
+            cmd.extend(["-P", str(port)])
+        if recursive:
+            cmd.append("-r")
+        cmd.extend([remote, str(dest_path)])
+        askpass = self._write_askpass(session)
+        try:
+            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, env=self._scp_env(askpass))
+        except subprocess.TimeoutExpired as exc:
+            try:
+                if askpass is not None:
+                    askpass.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return {
+                "stdout": exc.stdout or "",
+                "stderr": exc.stderr or "",
+                "exit_code": -1,
+                "success": False,
+                "remote": remote,
+                "dest": str(dest_path),
+                "timed_out": True,
+                "password_auth": bool(ADB_HUB_SCP_PASSWORD),
+            }
+        try:
+            if askpass is not None:
+                askpass.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "exit_code": proc.returncode,
+            "success": proc.returncode == 0,
+            "remote": remote,
+            "dest": str(dest_path),
+            "timed_out": False,
+            "password_auth": bool(ADB_HUB_SCP_PASSWORD),
+        }
 
     def shell(self, session_id: str, command: str, timeout: int = 30):
         session = self.get(session_id)
