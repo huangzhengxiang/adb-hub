@@ -71,7 +71,7 @@ def require_json(f):
 @api_bp.before_request
 def authenticate_request():
     """Require an encrypted token for all API routes except health."""
-    if request.path.endswith("/health") or not ADB_HUB_AUTH_REQUIRED:
+    if request.path in {"/api/v1/health", "/api/v1/devices"} or not ADB_HUB_AUTH_REQUIRED:
         return None
     try:
         verify_encrypted_token(request.headers.get("X-ADB-Hub-Token", ""))
