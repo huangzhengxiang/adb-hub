@@ -2,3 +2,6 @@
 .env
 session_workdirs/*
 !session_workdirs/.gitkeep
+
+# agents
+.claude/settings.local.json
