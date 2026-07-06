@@ -11,7 +11,7 @@ pip install -r requirements.txt
 
 # 2. 启动 (确保 adb 在 PATH 中)
 python app.py
-# → ADB Hub starting on http://0.0.0.0:5000
+# → ADB Hub starting on http://0.0.0.0:3588
 ```
 
 ## 配置
@@ -21,16 +21,17 @@ python app.py
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `ADB_HUB_HOST` | `0.0.0.0` | 监听地址 |
-| `ADB_HUB_PORT` | `5000` | 监听端口 |
+| `ADB_HUB_PORT` | `3588` | 监听端口 |
 | `ADB_PATH` | `adb` | adb 可执行文件路径 |
 | `ADB_HUB_DEBUG` | `false` | Flask debug 模式 |
+| `ADB_HUB_PUBLIC_HOST` | 空 | remote client/runner 访问 adb-server 上 adb-hub HTTP API 使用的地址 |
 | `ADB_HUB_AUTH_SECRET` | 空 | `.env` 中的共享密钥，启用认证时必填 |
 | `ADB_HUB_AUTH_REQUIRED` | `true` | 是否要求加密 token |
 | `ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD` | `true` | 是否要求 JSON 请求体使用加密 envelope |
 | `ADB_HUB_SESSION_ROOT` | `session_workdirs` | A 机器上的 session 工作目录根路径，默认位于项目内被忽略目录 |
 | `ADB_HUB_DEVICE_SESSION_ROOT` | `/data/local/tmp/adb-hub` | 手机端 session 工作目录根路径 |
-| `ADB_HUB_SCP_HOST` | 空 | 返回给客户端的 scp 目标 host |
-| `ADB_HUB_SCP_USER` | 空 | 返回给客户端的 scp 目标 user |
+| `ADB_HUB_SCP_HOST` | 空 | remote client/runner scp/ssh 上传文件到 adb-server 使用的地址；需要 `scp_target` 时必须显式设置 |
+| `ADB_HUB_SCP_USER` | 空 | remote client/runner scp 到 adb-server 使用的 SSH user |
 
 ```bash
 ADB_HUB_PORT=8080 python app.py   # 换端口
@@ -44,6 +45,9 @@ ADB_HUB_PORT=8080 python app.py   # 换端口
 ADB_HUB_AUTH_SECRET=<replace-with-random-local-secret>
 ADB_HUB_AUTH_REQUIRED=true
 ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD=true
+ADB_HUB_PUBLIC_HOST=<adb-server-http-host-or-ip>
+ADB_HUB_SCP_HOST=<adb-server-ssh-host-or-ip>
+ADB_HUB_SCP_USER=<ssh-user>
 ```
 
 认证 token 的明文是 `security.py` 里硬编码的长随机串。客户端和服务端都用 `.env` 里的 `ADB_HUB_AUTH_SECRET` 对该明文 token 做加密，实际 HTTP 交互只传加密后的 token：
@@ -80,15 +84,15 @@ body = encrypt_json_payload({"serial": "<device-serial>", "name": "mnn-run"})
 
 ## Session + SCP 工作流
 
-机器 A 运行 `adb-hub` 并连接手机；本机通过 scp 把模型和二进制上传到 A 机器上的 session 工作目录。`ADB_HUB_SESSION_ROOT=session_workdirs` 会解析为 `adb-hub/session_workdirs`，不是调用方当前目录下的 `session_workdirs`。
+adb-server 运行 `adb-hub` 并连接手机；remote client/runner 通过 HTTP API 控制 adb-hub，通过 scp/ssh 把模型和二进制上传到 adb-server 的 session 工作目录。`ADB_HUB_PUBLIC_HOST` 是 remote client 访问 adb-server HTTP API 的地址，`ADB_HUB_SCP_HOST` 是 remote client scp 到 adb-server 的 SSH 地址；二者多数情况下相同，但可以分开配置。`ADB_HUB_SESSION_ROOT=session_workdirs` 会解析为 `adb-hub/session_workdirs`，不是调用方当前目录下的 `session_workdirs`。
 
 ### Session 生命周期
 
 1. `create-session`
-   创建 `adb-hub/session_workdirs/<session_id>/`，写入 `session.json`，返回 `host_workdir`、`device_workdir` 和可选 `scp_target`。服务重启时会扫描仍存在的 `session.json` 恢复未关闭 session。
+   创建 `adb-hub/session_workdirs/<session_id>/`，写入 `session.json`，返回 `host_workdir`、`device_workdir`、可选 `hub_url` 和可选 `scp_target`。`hub_url` 来自 `ADB_HUB_PUBLIC_HOST`；`scp_target` 只在显式配置 `ADB_HUB_SCP_HOST` 时返回，不会 fallback 到 HTTP 地址。服务重启时会扫描仍存在的 `session.json` 恢复未关闭 session。
 
 2. scp 上传
-   本机把模型、二进制和脚本上传到返回的 `host_workdir`。这些文件不走 HTTP multipart；目录内容被 `.gitignore` 忽略。
+   remote client 把模型、二进制和脚本上传到返回的 `host_workdir`。这些文件不走 HTTP multipart；目录内容被 `.gitignore` 忽略。
 
 3. `open-session`
    在手机上创建 `/data/local/tmp/adb-hub/<session_id>/`，并锁定该 device serial。同一台设备同时只能被一个 open session 使用。
@@ -106,7 +110,7 @@ body = encrypt_json_payload({"serial": "<device-serial>", "name": "mnn-run"})
 
 | Method | Path | 说明 |
 |--------|------|------|
-| `POST` | `/api/v1/sessions` | 创建 session，返回 A 机器上的 `host_workdir` 和可选 `scp_target` |
+| `POST` | `/api/v1/sessions` | 创建 session，返回 A 机器上的 `host_workdir`、可选 `hub_url` 和可选 `scp_target` |
 | `GET` | `/api/v1/sessions` | 列出当前 active/recovered sessions |
 | `GET` | `/api/v1/sessions/<session_id>` | 查看单个 active/recovered session |
 | `POST` | `/api/v1/sessions/<session_id>/open` | 打开 session，并在手机端创建工作目录 |
@@ -116,23 +120,23 @@ body = encrypt_json_payload({"serial": "<device-serial>", "name": "mnn-run"})
 
 ### Python Client
 
-`client/adb_hub_client.py` 提供无第三方依赖的加密客户端。它从 `--secret`、`ADB_HUB_AUTH_SECRET`，或 `adb-hub/.env` 读取密钥。
+`client/adb_hub_client.py` 提供无第三方依赖的加密客户端。它从 `--secret`、`ADB_HUB_AUTH_SECRET`，或 `adb-hub/.env` 读取密钥；`--base-url` 未指定时，优先使用 `ADB_HUB_URL`，其次用 `ADB_HUB_PUBLIC_HOST` + `ADB_HUB_PORT` 生成 HTTP API 地址。
 
 ```bash
 # 查看设备
-python client/adb_hub_client.py --base-url http://A:5000 devices
+python client/adb_hub_client.py --base-url http://A:3588 devices
 
 # 创建 session，返回 host_workdir/scp_target
-python client/adb_hub_client.py --base-url http://A:5000 create-session   --serial <device-serial> --name mnn-run
+python client/adb_hub_client.py --base-url http://A:3588 create-session   --serial <device-serial> --name mnn-run
 
-# 本机通过 scp 把文件放入 A 机器 adb-hub/session_workdirs/<session_id>/
-scp inference_runner model.bin user@A:/path/to/adb-hub/session_workdirs/<session_id>/
+# remote client 通过 scp 把文件放入 adb-server 的 adb-hub/session_workdirs/<session_id>/
+scp inference_runner model.bin <ssh-user>@<adb-server-ssh-host-or-ip>:/path/to/adb-hub/session_workdirs/<session_id>/
 
 # 打开 session、推送到手机、执行、关闭
-python client/adb_hub_client.py --base-url http://A:5000 open-session <session_id>
-python client/adb_hub_client.py --base-url http://A:5000 push <session_id> inference_runner inference_runner
-python client/adb_hub_client.py --base-url http://A:5000 shell <session_id> -- chmod +x inference_runner '&&' ./inference_runner
-python client/adb_hub_client.py --base-url http://A:5000 close-session <session_id>
+python client/adb_hub_client.py --base-url http://A:3588 open-session <session_id>
+python client/adb_hub_client.py --base-url http://A:3588 push <session_id> inference_runner inference_runner
+python client/adb_hub_client.py --base-url http://A:3588 shell <session_id> -- chmod +x inference_runner '&&' ./inference_runner
+python client/adb_hub_client.py --base-url http://A:3588 close-session <session_id>
 ```
 
 ### Curl/自定义客户端
@@ -140,7 +144,7 @@ python client/adb_hub_client.py --base-url http://A:5000 close-session <session_
 控制面请求必须带加密 token；启用 `ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD=true` 时，带 JSON 请求体的控制面请求还必须发送加密 envelope。
 
 ```bash
-curl -X POST http://A:5000/api/v1/sessions   -H "Content-Type: application/json"   -H "X-ADB-Hub-Token: $TOKEN"   -d "$ENCRYPTED_CREATE_SESSION_BODY"
+curl -X POST http://A:3588/api/v1/sessions   -H "Content-Type: application/json"   -H "X-ADB-Hub-Token: $TOKEN"   -d "$ENCRYPTED_CREATE_SESSION_BODY"
 ```
 
 启用 `ADB_HUB_REQUIRE_ENCRYPTED_PAYLOAD=true` 时，raw multipart 文件上传会被拒绝；模型、二进制和大文件应通过 scp 放入 session workdir，再使用 `/sessions/<id>/push` 推送到手机。
@@ -197,31 +201,31 @@ curl -X POST http://A:5000/api/v1/sessions   -H "Content-Type: application/json"
 
 | Path | 说明 |
 |------|------|
-| `ws://host:5000/ws/v1/shell/<serial>` | 交互式 shell：发 `{"cmd": "ls"}` 收 `{"stdout": "..."}` |
-| `ws://host:5000/ws/v1/logcat/<serial>` | logcat 实时流：接收 `{"line": "..."}` |
+| `ws://host:3588/ws/v1/shell/<serial>` | 交互式 shell：发 `{"cmd": "ls"}` 收 `{"stdout": "..."}` |
+| `ws://host:3588/ws/v1/logcat/<serial>` | logcat 实时流：接收 `{"line": "..."}` |
 
 ## 调用示例
 
 ```bash
 # 列出设备
-curl http://10.0.0.5:5000/api/v1/devices
+curl http://10.0.0.5:3588/api/v1/devices
 
 # 执行 shell
-curl -X POST http://10.0.0.5:5000/api/v1/devices/R5CT1234/shell \
+curl -X POST http://10.0.0.5:3588/api/v1/devices/R5CT1234/shell \
   -H 'Content-Type: application/json' \
   -d '{"cmd": "dumpsys battery | grep level"}'
 
 # 安装 APK
-curl -X POST http://10.0.0.5:5000/api/v1/devices/R5CT1234/install \
+curl -X POST http://10.0.0.5:3588/api/v1/devices/R5CT1234/install \
   -F "file=@app.apk" -F "opts=-r"
 
 # 截图
-curl http://10.0.0.5:5000/api/v1/devices/R5CT1234/screenshot -o screen.png
+curl http://10.0.0.5:3588/api/v1/devices/R5CT1234/screenshot -o screen.png
 ```
 
 ## 前端仪表盘
 
-浏览器访问 `http://<服务器IP>:5000` 可查看设备连接状态和健康信息。仅此一页，所有操作通过 API 完成。
+浏览器访问 `http://<服务器IP>:3588` 可查看设备连接状态和健康信息。仅此一页，所有操作通过 API 完成。
 
 ## 项目结构
 

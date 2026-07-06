@@ -45,11 +45,24 @@ def _load_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def _default_secret() -> str:
-    if os.environ.get("ADB_HUB_AUTH_SECRET"):
-        return os.environ["ADB_HUB_AUTH_SECRET"]
+def _default_env() -> dict[str, str]:
     env_path = Path(__file__).resolve().parents[1] / ".env"
-    return _load_dotenv(env_path).get("ADB_HUB_AUTH_SECRET", "")
+    values = _load_dotenv(env_path)
+    values.update(os.environ)
+    return values
+
+
+def _default_secret() -> str:
+    return _default_env().get("ADB_HUB_AUTH_SECRET", "")
+
+
+def _default_base_url() -> str:
+    env = _default_env()
+    if env.get("ADB_HUB_URL"):
+        return env["ADB_HUB_URL"]
+    if env.get("ADB_HUB_PUBLIC_HOST"):
+        return f"http://{env['ADB_HUB_PUBLIC_HOST']}:{env.get('ADB_HUB_PORT', '3588')}"
+    return "http://127.0.0.1:3588"
 
 
 def _b64e(data: bytes) -> str:
@@ -178,7 +191,7 @@ def _print_json(data: Any) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ADB Hub encrypted client")
-    parser.add_argument("--base-url", default=os.environ.get("ADB_HUB_URL", "http://127.0.0.1:5000"))
+    parser.add_argument("--base-url", default=_default_base_url())
     parser.add_argument("--secret", default=None, help="Shared secret; defaults to ADB_HUB_AUTH_SECRET or ../.env")
     parser.add_argument("--timeout", type=int, default=30)
     sub = parser.add_subparsers(dest="command", required=True)

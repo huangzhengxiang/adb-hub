@@ -103,9 +103,9 @@ conda activate llm
 python app.py
 
 # 快速验证
-curl http://127.0.0.1:5000/api/v1/health
-curl http://127.0.0.1:5000/api/v1/devices
-curl -X POST http://127.0.0.1:5000/api/v1/devices/<serial>/shell \
+curl http://127.0.0.1:3588/api/v1/health
+curl http://127.0.0.1:3588/api/v1/devices
+curl -X POST http://127.0.0.1:3588/api/v1/devices/<serial>/shell \
   -H 'Content-Type: application/json' -d '{"cmd":"echo hello"}'
 ```
 
