@@ -110,7 +110,112 @@ def _run_step(report: dict[str, Any], name: str, fn) -> dict[str, Any]:
         raise
 
 
+
+def _action_kind(action: dict[str, Any]) -> str:
+    return str(action.get("type") or action.get("kind") or "").replace("_", "-").lower()
+
+
+def _action_value(action: dict[str, Any], *names: str, default: Any = None, required: bool = True) -> Any:
+    for name in names:
+        value = action.get(name)
+        if value not in (None, ""):
+            return value
+    if required:
+        kind = action.get("type") or action.get("kind") or "<missing type>"
+        raise ValueError(f"action {kind} missing one of: {', '.join(names)}")
+    return default
+
+
+def _extract_actions(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None] | None:
+    if isinstance(plan.get("actions"), list):
+        return list(plan["actions"]), None
+    sessions = plan.get("sessions")
+    if sessions is None:
+        return None
+    if not isinstance(sessions, list):
+        raise ValueError("sessions must be a list when using action schema")
+    if len(sessions) != 1:
+        raise ValueError("action schema supports exactly one session")
+    session = sessions[0]
+    if not isinstance(session, dict):
+        raise ValueError("session entry must be a JSON object")
+    actions = session.get("actions")
+    if not isinstance(actions, list):
+        raise ValueError("session.actions must be a list")
+    session_name = session.get("id") or session.get("name")
+    return list(actions), str(session_name) if session_name else None
+
+
+def _normalize_plan(plan: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    extracted = _extract_actions(plan)
+    if extracted is None:
+        return dict(plan), "flat"
+
+    actions, session_name = extracted
+    normalized = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"actions", "sessions", "fetch", "push", "shell", "pull", "download"}
+    }
+    if session_name and not normalized.get("name"):
+        normalized["name"] = session_name
+    normalized.setdefault("fetch", [])
+    normalized.setdefault("push", [])
+    normalized.setdefault("shell", [])
+    normalized.setdefault("pull", [])
+    normalized.setdefault("download", [])
+
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            raise ValueError(f"action[{index}] must be a JSON object")
+        kind = _action_kind(action)
+        if not kind:
+            raise ValueError(f"action[{index}] missing type")
+
+        if kind == "fetch":
+            item = {
+                "src": _action_value(action, "src", "source"),
+                "dest": _action_value(action, "dest", "destination", default="", required=False),
+            }
+            if "timeout" in action or "timeout_seconds" in action:
+                item["timeout"] = int(_action_value(action, "timeout", "timeout_seconds"))
+            if action.get("recursive") is not None:
+                item["recursive"] = bool(action.get("recursive"))
+            normalized["fetch"].append(item)
+        elif kind == "open":
+            normalized["open"] = True
+        elif kind == "push":
+            src = _action_value(action, "src", "source")
+            item = {
+                "src": src,
+                "dest": _action_value(action, "dest", "destination", default=src, required=False),
+            }
+            normalized["push"].append(item)
+        elif kind == "shell":
+            item = {"cmd": _action_value(action, "cmd", "command")}
+            if "timeout" in action or "timeout_seconds" in action:
+                item["timeout"] = int(_action_value(action, "timeout", "timeout_seconds"))
+            normalized["shell"].append(item)
+        elif kind == "pull":
+            normalized["pull"].append({
+                "src": _action_value(action, "src", "source"),
+                "dest": _action_value(action, "dest", "destination", default="", required=False),
+            })
+        elif kind == "download":
+            normalized["download"].append({
+                "src": _action_value(action, "src", "source"),
+                "dest": _action_value(action, "dest", "destination"),
+            })
+        elif kind == "close":
+            normalized["close"] = True
+        else:
+            raise ValueError(f"unsupported action type: {kind}")
+
+    return normalized, "actions"
+
+
 def run_plan(plan: dict[str, Any], *, plan_dir: Path, output_path: Path | None, base_url: str | None, secret: str | None, request_timeout: int, keep_session: bool) -> dict[str, Any]:
+    plan, plan_schema = _normalize_plan(plan)
     client = ADBHubClient(base_url or adb_hub_client._default_base_url(), secret=secret if secret is not None else adb_hub_client._default_secret(), timeout=request_timeout)
     cwd = Path.cwd()
     report: dict[str, Any] = {
@@ -118,6 +223,7 @@ def run_plan(plan: dict[str, Any], *, plan_dir: Path, output_path: Path | None, 
         "base_url": client.base_url,
         "started_at": _now(),
         "steps": [],
+        "plan_schema": plan_schema,
     }
     session_id: str | None = None
     try:

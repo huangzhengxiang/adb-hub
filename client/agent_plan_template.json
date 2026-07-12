@@ -3,43 +3,52 @@
   "serial": "",
   "fetch_timeout": 600,
   "shell_timeout": 600,
-  "fetch": [
+  "sessions": [
     {
-      "src": "path/to/local/remote-client-binary-or-model-file",
-      "dest": "runner-or-model-file"
-    }
-  ],
-  "open": true,
-  "push": [
-    {
-      "src": "runner-or-model-file",
-      "dest": "runner-or-model-file"
-    }
-  ],
-  "shell": [
-    {
-      "cmd": "chmod +x runner-or-model-file && ./runner-or-model-file > stdout.txt 2> stderr.txt",
-      "timeout": 600
-    }
-  ],
-  "pull": [
-    {
-      "src": "stdout.txt",
-      "dest": "outputs/stdout.txt"
-    },
-    {
-      "src": "stderr.txt",
-      "dest": "outputs/stderr.txt"
-    }
-  ],
-  "download": [
-    {
-      "src": "outputs/stdout.txt",
-      "dest": "./stdout.txt"
-    },
-    {
-      "src": "outputs/stderr.txt",
-      "dest": "./stderr.txt"
+      "id": "example-native-runtime-test",
+      "actions": [
+        {
+          "type": "fetch",
+          "src": "path/to/local/remote-client-binary-or-model-file",
+          "dest": "runner-or-model-file"
+        },
+        {
+          "type": "open"
+        },
+        {
+          "type": "push",
+          "src": "runner-or-model-file",
+          "dest": "runner-or-model-file"
+        },
+        {
+          "type": "shell",
+          "command": "chmod +x runner-or-model-file && ./runner-or-model-file > stdout.txt 2> stderr.txt",
+          "timeout": 600
+        },
+        {
+          "type": "pull",
+          "src": "stdout.txt",
+          "dest": "outputs/stdout.txt"
+        },
+        {
+          "type": "pull",
+          "src": "stderr.txt",
+          "dest": "outputs/stderr.txt"
+        },
+        {
+          "type": "download",
+          "src": "outputs/stdout.txt",
+          "dest": "./stdout.txt"
+        },
+        {
+          "type": "download",
+          "src": "outputs/stderr.txt",
+          "dest": "./stderr.txt"
+        },
+        {
+          "type": "close"
+        }
+      ]
     }
   ],
   "close": true

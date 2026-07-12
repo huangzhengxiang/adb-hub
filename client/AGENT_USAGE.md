@@ -6,7 +6,7 @@
 
 - agent 负责在 engine 目录内生成可执行文件、模型产物、运行脚本和 `adb_hub_plan.json`。
 - `adb-hub` 负责远端设备租约、scp 拉取、adb push/shell/pull、结果下载和 session 清理。
-- runner `client/agent_session_runner.py` 负责按 plan 执行完整 session 生命周期，并生成 JSON 报告。
+- runner `client/agent_session_runner.py` 负责按 plan 执行完整 session 生命周期，并生成 JSON 报告；它推荐读取 `sessions[0].actions[]` 结构，并会在 client 层归一化为内部 flat plan 后执行。
 - low-level tool `client/agent_adb_hub_tool.py` 允许 agent 逐步调用 `start/fetch/open/push/shell/pull/download/finish`；一个 ledger 只允许一个 session，创建和关闭由 tool 托管。
 - agent 不能在 plan 中写入密码、token 或 `.env` 内容；client 会自动读取 `adb-hub/.env` 或环境变量。
 
@@ -48,7 +48,7 @@ python eval/hub/adb-hub/client/agent_adb_hub_tool.py --ledger "$LEDGER" finish
 ## 推荐流程
 
 1. 在 engine 自己的 workdir 内准备端侧运行所需文件：native executable、shared libraries、model files、prompt/input files、运行脚本。
-2. 写一个 `adb_hub_plan.json`，声明：
+2. 写一个 `adb_hub_plan.json`，推荐使用 `sessions[0].actions[]`：每个 action 带 `type`，可用 `fetch/open/push/shell/pull/download/close`。旧的顶层 `fetch/push/shell/pull/download` flat plan 仍兼容。
    - `fetch`: adb-server 需要从 remote client scp 拉取哪些文件；`src` 可以是绝对路径，也可以是相对 plan 文件的路径。
    - `push`: host session workdir 中哪些文件需要推到手机 session workdir。
    - `shell`: 手机上要执行的命令。命令默认在手机 session workdir 下运行。
@@ -59,19 +59,19 @@ python eval/hub/adb-hub/client/agent_adb_hub_tool.py --ledger "$LEDGER" finish
 
 ## Plan 字段
 
+推荐 schema：
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `name` | string | session 名称，建议包含 engine/backend/model/test 名称 |
 | `serial` | string | 可选；为空时 runner 选择第一个 online device |
 | `fetch_timeout` | number | 默认 fetch 超时秒数 |
 | `shell_timeout` | number | 默认 shell 超时秒数 |
-| `fetch` | list | adb-server 通过 scp 从 remote client 下载到 host session workdir |
-| `open` | bool | 是否打开设备 session，默认 true |
-| `push` | list | 从 host session workdir 推到 device session workdir，当前只支持单文件条目 |
-| `shell` | list | 在 device session workdir 下执行命令 |
-| `pull` | list | 从 device session workdir 拉回 host session workdir |
-| `download` | list | 从 host session workdir 下载到 remote client 本地路径 |
-| `close` | bool | 是否自动关闭并清理 session，默认 true |
+| `sessions` | list | 只允许一个 session；session 内放 `actions` |
+| `sessions[].actions[].type` | string | 支持 `fetch/open/push/shell/pull/download/close`，未知类型会失败 |
+| `close` | bool | 是否自动关闭并清理 session，默认 true；`close` action 也会归一化为该字段 |
+
+兼容 schema：旧的顶层 `fetch/open/push/shell/pull/download/close` flat plan 仍可执行。action 字段支持 `src/source`、`dest/destination`、`cmd/command`、`timeout/timeout_seconds` 这些别名。
 
 ## Shell 输出规则
 
@@ -79,7 +79,8 @@ python eval/hub/adb-hub/client/agent_adb_hub_tool.py --ledger "$LEDGER" finish
 
 ```json
 {
-  "cmd": "export LD_LIBRARY_PATH=. && ./runner model/config.json input.json > run_stdout.txt 2> run_stderr.txt",
+  "type": "shell",
+  "command": "export LD_LIBRARY_PATH=. && ./runner model/config.json input.json > run_stdout.txt 2> run_stderr.txt",
   "timeout": 1200
 }
 ```
