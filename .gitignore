@@ -1,5 +1,7 @@
 **/__pycache__/
 .env
+.env-*
+内部指南.md
 session_workdirs/*
 !session_workdirs/.gitkeep
 

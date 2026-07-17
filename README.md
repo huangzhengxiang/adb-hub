@@ -2,7 +2,7 @@
 
 HTTP API 包装的 ADB 中间层服务。局域网内的程序无需安装 Android SDK，通过 REST/WebSocket 即可透明调用本机 ADB。
 
-## 快速启动
+## 快速启动ADB服务端
 
 ```bash
 # 1. 环境
@@ -17,6 +17,8 @@ python app.py
 ## 配置
 
 全部通过环境变量控制：
+
+内部人员请参考 `内部指南.md` 中的配置方法，`.env` 请参考 `.env-internal`。使用前需要将 `ADB_HUB_SCP_HOST`、`ADB_HUB_SCP_PORT`、`ADB_HUB_SCP_PASSWORD` 替换成当前 AutoDL 主机的 Host、Port 和 password。
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|

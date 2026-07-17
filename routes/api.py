@@ -158,10 +158,26 @@ def device_detail(serial: str):
 def create_session():
     """Create a host workspace on the adb-hub machine for later scp upload."""
     data = get_request_json()
+    scp = data.get("scp") if isinstance(data.get("scp"), dict) else {}
+    missing_scp = [
+        name for key, name in {
+            "host": "ADB_HUB_SCP_HOST",
+            "port": "ADB_HUB_SCP_PORT",
+            "password": "ADB_HUB_SCP_PASSWORD",
+        }.items()
+        if not scp.get(key)
+    ]
+    if missing_scp:
+        return api_response(
+            False,
+            error="missing required encrypted session SCP configuration: " + ", ".join(missing_scp),
+            status=400,
+        )
     try:
         session = session_manager.create(
             serial=data.get("serial", ""),
             name=data.get("name", ""),
+            scp=scp,
         )
         return api_response(True, data=session.to_dict(), status=201)
     except SessionError as e:

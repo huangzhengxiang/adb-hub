@@ -26,6 +26,11 @@ TOKEN_PLAINTEXT = (
     "yH3s6ZcQe9N0pVk2W8rD4mTb7LxFa1UjG5qPwS0nRcEiKzAoY6MdBhXl93TfQvJ"
 )
 ENVELOPE_VERSION = "adb-hub-enc-v1"
+REQUIRED_SCP_ENV = {
+    "host": "ADB_HUB_SCP_HOST",
+    "port": "ADB_HUB_SCP_PORT",
+    "password": "ADB_HUB_SCP_PASSWORD",
+}
 
 
 class ADBHubClientError(Exception):
@@ -63,6 +68,28 @@ def _default_base_url() -> str:
     if env.get("ADB_HUB_PUBLIC_HOST"):
         return f"http://{env['ADB_HUB_PUBLIC_HOST']}:{env.get('ADB_HUB_PORT', '3588')}"
     return "http://127.0.0.1:3588"
+
+
+def _default_scp() -> dict[str, str]:
+    env = _default_env()
+    return {
+        "host": env.get("ADB_HUB_SCP_HOST", ""),
+        "port": env.get("ADB_HUB_SCP_PORT", ""),
+        "user": env.get("ADB_HUB_SCP_USER", ""),
+        "password": env.get("ADB_HUB_SCP_PASSWORD", ""),
+    }
+
+
+def _session_scp_config() -> dict[str, str]:
+    scp = _default_scp()
+    missing = [env_name for key, env_name in REQUIRED_SCP_ENV.items() if not scp.get(key)]
+    if missing:
+        raise ADBHubClientError(
+            "missing required SCP configuration: "
+            + ", ".join(missing)
+            + "; copy .env-internal to .env or set these variables for the current AutoDL host"
+        )
+    return scp
 
 
 def _b64e(data: bytes) -> str:
@@ -185,7 +212,9 @@ class ADBHubClient:
         return self.request("GET", "/api/v1/devices")
 
     def create_session(self, serial: str, name: str = "") -> dict[str, Any]:
-        return self.request("POST", "/api/v1/sessions", {"serial": serial, "name": name})
+        payload: dict[str, Any] = {"serial": serial, "name": name}
+        payload["scp"] = _session_scp_config()
+        return self.request("POST", "/api/v1/sessions", payload)
 
     def list_sessions(self) -> dict[str, Any]:
         return self.request("GET", "/api/v1/sessions")

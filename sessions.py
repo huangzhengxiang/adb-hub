@@ -14,6 +14,7 @@ from pathlib import Path
 
 from adb_utils.client import ADBError, adb
 from config import (
+    ADB_HUB_CLEAN_DEVICE_SESSION_ROOT,
     ADB_HUB_DEVICE_SESSION_ROOT,
     ADB_HUB_SCP_HOST,
     ADB_HUB_SCP_PASSWORD,
@@ -36,13 +37,19 @@ class ADBSession:
     host_workdir: str
     device_workdir: str
     created_at: str
+    scp_host: str = ""
+    scp_port: str = ""
+    scp_user: str = ""
+    scp_password: str = ""
     opened_at: str | None = None
     closed_at: str | None = None
     cleanup_errors: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        data["scp_source_configured"] = bool(ADB_HUB_SCP_HOST)
+        data.pop("scp_password", None)
+        data["scp_source_configured"] = bool(self.scp_host)
+        data["scp_password_configured"] = bool(self.scp_password)
         return data
 
 
@@ -80,6 +87,10 @@ class SessionManager:
                     host_workdir=data["host_workdir"],
                     device_workdir=data["device_workdir"],
                     created_at=data["created_at"],
+                    scp_host=data.get("scp_host", ADB_HUB_SCP_HOST),
+                    scp_port=data.get("scp_port", ADB_HUB_SCP_PORT),
+                    scp_user=data.get("scp_user", ADB_HUB_SCP_USER),
+                    scp_password=data.get("scp_password", ADB_HUB_SCP_PASSWORD),
                     opened_at=data.get("opened_at"),
                     closed_at=data.get("closed_at"),
                     cleanup_errors=data.get("cleanup_errors", []),
@@ -108,11 +119,16 @@ class SessionManager:
 
     def _write_meta(self, session: ADBSession) -> None:
         path = Path(session.host_workdir) / "session.json"
-        path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        data = asdict(session)
+        data.pop("scp_password", None)
+        data["scp_source_configured"] = bool(session.scp_host)
+        data["scp_password_configured"] = bool(session.scp_password)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def create(self, serial: str, name: str = "") -> ADBSession:
+    def create(self, serial: str, name: str = "", scp: dict | None = None) -> ADBSession:
         if not serial:
             raise SessionError("serial is required")
+        scp = scp or {}
         session_id = self._new_id()
         host_workdir = self._session_path(session_id)
         host_workdir.mkdir(parents=True, exist_ok=False)
@@ -124,6 +140,10 @@ class SessionManager:
             host_workdir=str(host_workdir),
             device_workdir=f"{self.device_root}/{session_id}",
             created_at=self._now(),
+            scp_host=str(scp.get("host") or ADB_HUB_SCP_HOST or ""),
+            scp_port=str(scp.get("port") or ADB_HUB_SCP_PORT or ""),
+            scp_user=str(scp.get("user") or ADB_HUB_SCP_USER or ""),
+            scp_password=str(scp.get("password") or ADB_HUB_SCP_PASSWORD or ""),
         )
         self.sessions[session_id] = session
         self._write_meta(session)
@@ -153,11 +173,13 @@ class SessionManager:
         self._write_meta(session)
         return session
 
-    def close(self, session_id: str, remove_device: bool = True) -> ADBSession:
+    def close(self, session_id: str, remove_device: bool | None = None) -> ADBSession:
         session = self.get(session_id)
         cleanup_errors: list[dict] = []
         session.state = "closed"
         session.closed_at = self._now()
+        if remove_device is None:
+            remove_device = ADB_HUB_CLEAN_DEVICE_SESSION_ROOT
         if remove_device:
             try:
                 result = adb.shell(session.serial, f"rm -rf {shlex.quote(session.device_workdir)}", timeout=30)
@@ -228,7 +250,7 @@ class SessionManager:
         return path
 
     def _write_askpass(self, session: ADBSession) -> Path | None:
-        if not ADB_HUB_SCP_PASSWORD:
+        if not session.scp_password:
             return None
         base = Path(session.host_workdir)
         if os.name == "nt":
@@ -243,20 +265,20 @@ class SessionManager:
             path.chmod(0o700)
         return path
 
-    def _scp_env(self, askpass: Path | None) -> dict:
+    def _scp_env(self, askpass: Path | None, session: ADBSession) -> dict:
         env = os.environ.copy()
         if askpass is not None:
             env["SSH_ASKPASS"] = str(askpass)
             env["SSH_ASKPASS_REQUIRE"] = "force"
             env["DISPLAY"] = env.get("DISPLAY", "adb-hub:0")
-            env["ADB_HUB_SCP_PASSWORD"] = ADB_HUB_SCP_PASSWORD
+            env["ADB_HUB_SCP_PASSWORD"] = session.scp_password
         return env
 
     def fetch(self, session_id: str, src: str, dest: str = "", recursive: bool = False, timeout: int = 600) -> dict:
         """Download a file from the remote client into the host session workdir."""
         session = self.get(session_id)
-        if not ADB_HUB_SCP_HOST:
-            raise SessionError("ADB_HUB_SCP_HOST is required for session fetch")
+        if not session.scp_host:
+            raise SessionError("session scp host is required for session fetch")
         if not src or "\0" in src:
             raise SessionError("src is required")
         if dest:
@@ -267,23 +289,23 @@ class SessionManager:
                 raise SessionError("dest is required when src has no basename")
             dest_path = self._safe_host_path(session, name)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        remote_prefix = f"{ADB_HUB_SCP_USER}@" if ADB_HUB_SCP_USER else ""
-        remote = f"{remote_prefix}{ADB_HUB_SCP_HOST}:{src}"
+        remote_prefix = f"{session.scp_user}@" if session.scp_user else ""
+        remote = f"{remote_prefix}{session.scp_host}:{src}"
         cmd = ["scp", "-o", "BatchMode=no", "-o", "NumberOfPasswordPrompts=1", "-o", "StrictHostKeyChecking=accept-new"]
-        if ADB_HUB_SCP_PORT:
+        if session.scp_port:
             try:
-                port = int(ADB_HUB_SCP_PORT)
+                port = int(session.scp_port)
             except ValueError as exc:
-                raise SessionError("ADB_HUB_SCP_PORT must be an integer") from exc
+                raise SessionError("session scp port must be an integer") from exc
             if port <= 0 or port > 65535:
-                raise SessionError("ADB_HUB_SCP_PORT must be between 1 and 65535")
+                raise SessionError("session scp port must be between 1 and 65535")
             cmd.extend(["-P", str(port)])
         if recursive:
             cmd.append("-r")
         cmd.extend([remote, str(dest_path)])
         askpass = self._write_askpass(session)
         try:
-            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, env=self._scp_env(askpass))
+            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, env=self._scp_env(askpass, session))
         except subprocess.TimeoutExpired as exc:
             try:
                 if askpass is not None:
@@ -298,7 +320,7 @@ class SessionManager:
                 "remote": remote,
                 "dest": str(dest_path),
                 "timed_out": True,
-                "password_auth": bool(ADB_HUB_SCP_PASSWORD),
+                "password_auth": bool(session.scp_password),
             }
         try:
             if askpass is not None:
@@ -313,7 +335,7 @@ class SessionManager:
             "remote": remote,
             "dest": str(dest_path),
             "timed_out": False,
-            "password_auth": bool(ADB_HUB_SCP_PASSWORD),
+            "password_auth": bool(session.scp_password),
         }
 
     def shell(self, session_id: str, command: str, timeout: int = 30):

@@ -55,6 +55,9 @@ ADB_HUB_DEVICE_SESSION_ROOT = os.environ.get(
     "ADB_HUB_DEVICE_SESSION_ROOT",
     "/data/local/tmp/adb-hub",
 )
+ADB_HUB_CLEAN_DEVICE_SESSION_ROOT = (
+    os.environ.get("ADB_HUB_CLEAN_DEVICE_SESSION_ROOT", "false").lower() == "true"
+)
 ADB_HUB_SCP_HOST = os.environ.get("ADB_HUB_SCP_HOST", "")
 ADB_HUB_SCP_PORT = os.environ.get("ADB_HUB_SCP_PORT", "")
 ADB_HUB_SCP_USER = os.environ.get("ADB_HUB_SCP_USER", "")
