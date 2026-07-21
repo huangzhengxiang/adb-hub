@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import shlex
@@ -20,9 +21,12 @@ from config import (
     ADB_HUB_SCP_PASSWORD,
     ADB_HUB_SCP_PORT,
     ADB_HUB_SCP_USER,
+    ADB_HUB_SCP_FETCH_RETRIES,
     ADB_HUB_SESSION_ROOT,
 )
 
+
+logger = logging.getLogger(__name__)
 
 class SessionError(Exception):
     """Raised for invalid session lifecycle operations."""
@@ -54,9 +58,10 @@ class ADBSession:
 
 
 class SessionManager:
-    def __init__(self, root: str = ADB_HUB_SESSION_ROOT, device_root: str = ADB_HUB_DEVICE_SESSION_ROOT):
+    def __init__(self, root: str = ADB_HUB_SESSION_ROOT, device_root: str = ADB_HUB_DEVICE_SESSION_ROOT, scp_fetch_retries: int = ADB_HUB_SCP_FETCH_RETRIES):
         self.root = Path(root).expanduser().resolve()
         self.device_root = device_root.rstrip("/")
+        self.scp_fetch_retries = max(0, scp_fetch_retries)
         self.sessions: dict[str, ADBSession] = {}
         self.serial_locks: dict[str, str] = {}
         self.root.mkdir(parents=True, exist_ok=True)
@@ -304,39 +309,57 @@ class SessionManager:
             cmd.append("-r")
         cmd.extend([remote, str(dest_path)])
         askpass = self._write_askpass(session)
+        attempts: list[dict] = []
         try:
-            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, env=self._scp_env(askpass, session))
-        except subprocess.TimeoutExpired as exc:
+            for attempt in range(1, self.scp_fetch_retries + 2):
+                try:
+                    proc = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, env=self._scp_env(askpass, session))
+                    result = {
+                        "stdout": proc.stdout,
+                        "stderr": proc.stderr,
+                        "exit_code": proc.returncode,
+                        "success": proc.returncode == 0,
+                        "remote": remote,
+                        "dest": str(dest_path),
+                        "timed_out": False,
+                        "password_auth": bool(session.scp_password),
+                    }
+                except subprocess.TimeoutExpired as exc:
+                    result = {
+                        "stdout": exc.stdout or "",
+                        "stderr": exc.stderr or "",
+                        "exit_code": -1,
+                        "success": False,
+                        "remote": remote,
+                        "dest": str(dest_path),
+                        "timed_out": True,
+                        "password_auth": bool(session.scp_password),
+                    }
+                attempts.append({
+                    "attempt": attempt,
+                    "exit_code": result["exit_code"],
+                    "success": result["success"],
+                    "timed_out": result["timed_out"],
+                })
+                if result["success"] or attempt > self.scp_fetch_retries:
+                    result["attempt_count"] = attempt
+                    result["retry_count"] = attempt - 1
+                    result["max_retries"] = self.scp_fetch_retries
+                    result["attempts"] = attempts
+                    return result
+                logger.warning(
+                    "scp fetch attempt %s/%s failed for %s (exit_code=%s); retrying",
+                    attempt,
+                    self.scp_fetch_retries + 1,
+                    remote,
+                    result["exit_code"],
+                )
+        finally:
             try:
                 if askpass is not None:
                     askpass.unlink(missing_ok=True)
             except OSError:
                 pass
-            return {
-                "stdout": exc.stdout or "",
-                "stderr": exc.stderr or "",
-                "exit_code": -1,
-                "success": False,
-                "remote": remote,
-                "dest": str(dest_path),
-                "timed_out": True,
-                "password_auth": bool(session.scp_password),
-            }
-        try:
-            if askpass is not None:
-                askpass.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return {
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "exit_code": proc.returncode,
-            "success": proc.returncode == 0,
-            "remote": remote,
-            "dest": str(dest_path),
-            "timed_out": False,
-            "password_auth": bool(session.scp_password),
-        }
 
     def shell(self, session_id: str, command: str, timeout: int = 30):
         session = self.get(session_id)

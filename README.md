@@ -36,6 +36,7 @@ python app.py
 | `ADB_HUB_SCP_PORT` | 空 | adb-server scp 到 remote client 使用的 SSH 端口；为空时使用 scp 默认端口 22 |
 | `ADB_HUB_SCP_USER` | 空 | adb-server scp 到 remote client 使用的 SSH user |
 | `ADB_HUB_SCP_PASSWORD` | 空 | adb-server scp 到 remote client 使用的 SSH password；为空时依赖 key/agent 等非密码认证 |
+| `ADB_HUB_SCP_FETCH_RETRIES` | `3` | 单次 SCP fetch 失败后的额外重试次数；每次使用相同 timeout，最多执行 4 次 |
 
 ```bash
 ADB_HUB_PORT=8080 python app.py   # 换端口
