@@ -150,6 +150,8 @@ adb-server 运行 `adb-hub` 并连接手机；remote client/runner 只通过 HTT
 
 如果 agent 需要开放式逐步调试，可以使用 `client/agent_adb_hub_tool.py`。该工具一个 ledger 只允许一个 session：`start` 创建，`fetch/open-session/push/shell/pull/download` 隐式使用该 session，`finish` 关闭；失败或中断后用 `cleanup` 兜底。详细 schema、ledger 规则和示例见 `client/AGENT_USAGE.md`，模板见 `client/agent_plan_template.json`。
 
+完整的 SCP 模型拉取、手机端运行脚本和输出回收示例见 [`client/examples/scp_model_phone_run/`](client/examples/scp_model_phone_run/README.md)。
+
 ```bash
 python client/agent_session_runner.py \
   --plan path/to/adb_hub_plan.json \
@@ -161,25 +163,25 @@ python client/agent_adb_hub_tool.py --ledger path/to/session_ledger.json finish
 
 ### Python Client
 
-`client/adb_hub_client.py` 提供无第三方依赖的加密客户端。它从 `--secret`、`ADB_HUB_AUTH_SECRET`，或 `adb-hub/.env` 读取密钥；`--base-url` 未指定时，优先使用 `ADB_HUB_URL`，其次用 `ADB_HUB_PUBLIC_HOST` + `ADB_HUB_PORT` 生成 HTTP API 地址。
+`client/adb_hub_client.py` 提供无第三方依赖的加密客户端。它只从 `ADB_HUB_AUTH_SECRET` 或 `adb-hub/.env` 读取密钥；HTTP API 地址只从 `ADB_HUB_URL`，或 `ADB_HUB_PUBLIC_HOST` + `ADB_HUB_PORT` 读取。
 
 ```bash
 # 查看设备
-python client/adb_hub_client.py --base-url http://A:3588 devices
+python client/adb_hub_client.py devices
 
 # 创建 session，返回 host_workdir/device_workdir
-python client/adb_hub_client.py --base-url http://A:3588 create-session   --serial <device-serial> --name mnn-run
+python client/adb_hub_client.py create-session --serial <device-serial> --name mnn-run
 
 # adb-server 从 remote client 下载文件到 host session workdir
-python client/adb_hub_client.py --base-url http://A:3588 fetch <session_id>   /path/on/remote-client/inference_runner inference_runner
+python client/adb_hub_client.py fetch <session_id> /path/on/remote-client/inference_runner inference_runner
 
 # 打开 session、推送到手机、执行、拉回输出、下载到 remote client、关闭
-python client/adb_hub_client.py --base-url http://A:3588 open-session <session_id>
-python client/adb_hub_client.py --base-url http://A:3588 push <session_id> inference_runner inference_runner
-python client/adb_hub_client.py --base-url http://A:3588 shell <session_id> -- chmod +x inference_runner '&&' ./inference_runner '>' out.txt '2>' err.txt
-python client/adb_hub_client.py --base-url http://A:3588 pull <session_id> out.txt outputs/out.txt
-python client/adb_hub_client.py --base-url http://A:3588 download <session_id> outputs/out.txt ./out.txt
-python client/adb_hub_client.py --base-url http://A:3588 close-session <session_id>
+python client/adb_hub_client.py open-session <session_id>
+python client/adb_hub_client.py push <session_id> inference_runner inference_runner
+python client/adb_hub_client.py shell <session_id> -- chmod +x inference_runner '&&' ./inference_runner '>' out.txt '2>' err.txt
+python client/adb_hub_client.py pull <session_id> out.txt outputs/out.txt
+python client/adb_hub_client.py download <session_id> outputs/out.txt ./out.txt
+python client/adb_hub_client.py close-session <session_id>
 ```
 
 ### Curl/自定义客户端

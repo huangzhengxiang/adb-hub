@@ -1,0 +1,2 @@
+ADB Hub model smoke payload.
+Replace this file with a real model file fetched over SCP.

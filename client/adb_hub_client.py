@@ -98,7 +98,7 @@ def _b64e(data: bytes) -> str:
 
 def _derive_key(secret: str) -> bytes:
     if not secret:
-        raise ADBHubClientError("missing secret; pass --secret or set ADB_HUB_AUTH_SECRET")
+        raise ADBHubClientError("missing ADB_HUB_AUTH_SECRET; set it in the environment or .env")
     return hashlib.sha256(b"adb-hub-secret-v1\0" + secret.encode("utf-8")).digest()
 
 
@@ -139,9 +139,9 @@ def encrypt_json_payload(data: Any, secret: str) -> dict[str, str]:
 
 
 class ADBHubClient:
-    def __init__(self, base_url: str, secret: str | None = None, timeout: int = 30):
-        self.base_url = base_url.rstrip("/")
-        self.secret = secret if secret is not None else _default_secret()
+    def __init__(self, timeout: int = 30):
+        self.base_url = _default_base_url().rstrip("/")
+        self.secret = _default_secret()
         self.timeout = timeout
 
     def _headers(self, encrypted: bool = True) -> dict[str, str]:
@@ -255,8 +255,6 @@ def _print_json(data: Any) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ADB Hub encrypted client")
-    parser.add_argument("--base-url", default=_default_base_url())
-    parser.add_argument("--secret", default=None, help="Shared secret; defaults to ADB_HUB_AUTH_SECRET or ../.env")
     parser.add_argument("--timeout", type=int, default=30)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -308,7 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    client = ADBHubClient(args.base_url, secret=args.secret, timeout=args.timeout)
+    client = ADBHubClient(timeout=args.timeout)
     try:
         if args.command == "health":
             result = client.health()

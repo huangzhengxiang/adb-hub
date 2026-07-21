@@ -22,6 +22,10 @@ python eval/hub/adb-hub/client/agent_session_runner.py \
   --output path/to/adb_hub_report.json
 ```
 
+完整的 SCP 模型拉取、推送到手机、设备端启动脚本、输出 pull/download 示例见
+[`examples/scp_model_phone_run/`](examples/scp_model_phone_run/README.md)。其中包含
+可直接运行的 `adb_hub_plan.json` 和离线流程校验脚本。
+
 ### 模式 B：开放式 low-level tool
 
 适合调试、逐步验证和需要多轮探索的端侧测试。一个 ledger 只允许一个 session：agent 开始时 `start`，后续所有命令隐式使用这个 session，结束时 `finish`。如果运行被中断，最后用 `cleanup` 兜底关闭。

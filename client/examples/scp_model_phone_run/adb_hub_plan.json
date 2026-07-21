@@ -1,0 +1,94 @@
+{
+  "name": "scp-model-phone-run-example",
+  "fetch_timeout": 900,
+  "shell_timeout": 900,
+  "sessions": [
+    {
+      "id": "scp-model-phone-run-example",
+      "actions": [
+        {
+          "type": "fetch",
+          "src": "bin/model_runner.sh",
+          "dest": "bin/model_runner.sh"
+        },
+        {
+          "type": "fetch",
+          "src": "model/demo_model.txt",
+          "dest": "model/demo_model.txt"
+        },
+        {
+          "type": "fetch",
+          "src": "input/prompt.txt",
+          "dest": "input/prompt.txt"
+        },
+        {
+          "type": "fetch",
+          "src": "run_on_device.sh",
+          "dest": "run_on_device.sh"
+        },
+        {
+          "type": "open"
+        },
+        {
+          "type": "push",
+          "src": "bin/model_runner.sh",
+          "dest": "bin/model_runner.sh"
+        },
+        {
+          "type": "push",
+          "src": "model/demo_model.txt",
+          "dest": "model/demo_model.txt"
+        },
+        {
+          "type": "push",
+          "src": "input/prompt.txt",
+          "dest": "input/prompt.txt"
+        },
+        {
+          "type": "push",
+          "src": "run_on_device.sh",
+          "dest": "run_on_device.sh"
+        },
+        {
+          "type": "shell",
+          "command": "mkdir -p outputs && sh ./run_on_device.sh > outputs/run_stdout.txt 2> outputs/run_stderr.txt",
+          "timeout": 900
+        },
+        {
+          "type": "pull",
+          "src": "outputs/model_output.txt",
+          "dest": "outputs/model_output.txt"
+        },
+        {
+          "type": "pull",
+          "src": "outputs/run_stdout.txt",
+          "dest": "outputs/run_stdout.txt"
+        },
+        {
+          "type": "pull",
+          "src": "outputs/run_stderr.txt",
+          "dest": "outputs/run_stderr.txt"
+        },
+        {
+          "type": "download",
+          "src": "outputs/model_output.txt",
+          "dest": "client/examples/scp_model_phone_run/received/model_output.txt"
+        },
+        {
+          "type": "download",
+          "src": "outputs/run_stdout.txt",
+          "dest": "client/examples/scp_model_phone_run/received/run_stdout.txt"
+        },
+        {
+          "type": "download",
+          "src": "outputs/run_stderr.txt",
+          "dest": "client/examples/scp_model_phone_run/received/run_stderr.txt"
+        },
+        {
+          "type": "close"
+        }
+      ]
+    }
+  ],
+  "close": true
+}

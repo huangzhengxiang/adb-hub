@@ -214,9 +214,9 @@ def _normalize_plan(plan: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return normalized, "actions"
 
 
-def run_plan(plan: dict[str, Any], *, plan_dir: Path, output_path: Path | None, base_url: str | None, secret: str | None, request_timeout: int, keep_session: bool) -> dict[str, Any]:
+def run_plan(plan: dict[str, Any], *, plan_dir: Path, output_path: Path | None, request_timeout: int, keep_session: bool) -> dict[str, Any]:
     plan, plan_schema = _normalize_plan(plan)
-    client = ADBHubClient(base_url or adb_hub_client._default_base_url(), secret=secret if secret is not None else adb_hub_client._default_secret(), timeout=request_timeout)
+    client = ADBHubClient(timeout=request_timeout)
     cwd = Path.cwd()
     report: dict[str, Any] = {
         "plan_name": plan.get("name", "adb-hub-agent-plan"),
@@ -315,8 +315,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run an ADB Hub agent test plan")
     parser.add_argument("--plan", required=True, help="JSON plan path")
     parser.add_argument("--output", required=True, help="JSON report output path")
-    parser.add_argument("--base-url", default=None)
-    parser.add_argument("--secret", default=None)
     parser.add_argument("--timeout", type=int, default=300, help="HTTP request timeout seconds")
     parser.add_argument("--keep-session", action="store_true", help="Do not close the session on exit")
     return parser
@@ -331,8 +329,6 @@ def main(argv: list[str] | None = None) -> int:
         plan,
         plan_dir=plan_path.parent,
         output_path=output_path,
-        base_url=args.base_url,
-        secret=args.secret,
         request_timeout=args.timeout,
         keep_session=args.keep_session,
     )

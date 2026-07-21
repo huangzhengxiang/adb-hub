@@ -106,6 +106,20 @@ flask-sock>=0.7
 - 详细说明见 `client/AGENT_USAGE.md`，模板见 `client/agent_plan_template.json`。
 - 正式评测不要使用 `--keep-session`；失败也应让 runner/tool 尝试关闭 session 并把错误写入 report。
 
+### Coding agent 首选端到端参考
+
+开始新的端侧模型任务前，先阅读并按需复制
+[`client/examples/scp_model_phone_run/`](client/examples/scp_model_phone_run/README.md)。这是完整的
+`SCP fetch → session open → adb push → device shell → pull → download → close`
+参考流程，包含：
+
+- [`adb_hub_plan.json`](client/examples/scp_model_phone_run/adb_hub_plan.json)：可直接交给 runner 的 action schema。
+- [`run_on_device.sh`](client/examples/scp_model_phone_run/run_on_device.sh)：设备端环境变量、`LD_LIBRARY_PATH` 和程序启动方式。
+- [`verify_example.py`](client/examples/scp_model_phone_run/verify_example.py)：无需设备的流程契约校验。
+
+agent 可按任务自由调整 plan、设备端脚本、runner 参数、`lib/`、model、input 和需要回收的输出文件。
+`.env` 是只读的受管配置：agent 不得读取、修改、复制或输出其内容。
+
 ## 运行与测试
 
 ```bash

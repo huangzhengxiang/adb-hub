@@ -148,11 +148,7 @@ def _record_start(path: Path, data: dict[str, Any], serial: str, name: str) -> s
 
 
 def _client(args: argparse.Namespace) -> ADBHubClient:
-    return ADBHubClient(
-        args.base_url or adb_hub_client._default_base_url(),
-        secret=args.secret if args.secret is not None else adb_hub_client._default_secret(),
-        timeout=args.timeout,
-    )
+    return ADBHubClient(timeout=args.timeout)
 
 
 def _print(data: Any) -> None:
@@ -269,8 +265,6 @@ def run_command(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Single-session ADB Hub tool for agents")
-    parser.add_argument("--base-url", default=None)
-    parser.add_argument("--secret", default=None)
     parser.add_argument("--timeout", type=int, default=300, help="HTTP request timeout seconds")
     parser.add_argument("--ledger", default=str(_default_ledger()), help="Single-session ledger JSON path")
     sub = parser.add_subparsers(dest="command", required=True)
